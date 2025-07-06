@@ -13,9 +13,8 @@ cp .env.example .env
 source .env
 ./scripts/init-setup.sh
 
-# 3. Set AWS credentials from 1Password (using vars from .env)
-export AWS_ACCESS_KEY_ID=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
-export AWS_SECRET_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
+# 3. Set AWS credentials from 1Password
+source scripts/set-aws-credentials.sh
 
 # 4. Run OpenTofu
 cd environments/dev
@@ -157,6 +156,18 @@ cat discovered-buckets.json
 # Import buckets
 cd environments/dev
 ../../scripts/import-with-credentials.sh
+```
+
+### Set AWS Credentials
+
+```bash
+# Option 1: Use the convenience script (recommended)
+source scripts/set-aws-credentials.sh
+
+# Option 2: Set manually
+source .env
+export AWS_ACCESS_KEY_ID=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
+export AWS_SECRET_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
 ```
 
 ### Add New S3 Bucket
