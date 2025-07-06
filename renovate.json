@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:base",
+    ":dependencyDashboard",
+    ":semanticCommitsDisabled"
+  ],
+  "timezone": "America/Los_Angeles",
+  "schedule": ["before 3am on Monday"],
+  "terraform": {
+    "enabled": true
+  },
+  "regexManagers": [
+    {
+      "description": "Update OpenTofu version constraint",
+      "fileMatch": ["(^|/)versions\\.tf$"],
+      "matchStrings": [
+        "required_version\\s*=\\s*\">=\\s*(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "opentofu",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "opentofu/opentofu"
+    },
+    {
+      "description": "Update mise tool versions",
+      "fileMatch": ["^\\.mise\\.toml$"],
+      "matchStrings": [
+        "opentofu\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "awscli\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "\"1password-cli\"\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "jq\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\""
+      ],
+      "depNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu{{else if (equals depName 'awscli')}}awscli{{else if (equals depName '1password-cli')}}1password-cli{{else}}jq{{/if}}",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu/opentofu{{else if (equals depName '1password-cli')}}1Password/op{{else if (equals depName 'jq')}}jqlang/jq{{else}}aws/aws-cli{{/if}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group Terraform provider updates",
+      "matchManagers": ["terraform"],
+      "matchDepTypes": ["provider"],
+      "groupName": "terraform-providers"
+    },
+    {
+      "description": "Automerge patch updates for mise tools",
+      "matchFileNames": [".mise.toml"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Pin OpenTofu version",
+      "matchDepNames": ["opentofu"],
+      "rangeStrategy": "pin"
+    }
+  ],
+  "labels": ["dependencies", "renovate"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2
+}

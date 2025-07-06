@@ -24,11 +24,23 @@ tofu apply
 
 ## 📋 Prerequisites
 
-- **OpenTofu** or Terraform (v1.5.0+)
-- **AWS CLI** configured
-- **1Password CLI** installed and configured
-- **jq** for JSON processing
+- **mise** (recommended) or manually installed tools:
+  - **OpenTofu** (v1.5.0+)
+  - **AWS CLI** configured
+  - **1Password CLI** installed and configured
+  - **jq** for JSON processing
 - AWS credentials stored in 1Password (configure location in .env)
+
+### Automated Tool Installation
+
+This project uses [mise](https://mise.jdx.dev) for managing tool versions:
+
+```bash
+# Install mise and all required tools
+./scripts/setup-mise.sh
+```
+
+See [docs/dependency-management.md](docs/dependency-management.md) for details.
 
 ## 🏗️ Architecture
 
@@ -249,11 +261,21 @@ jobs:
           terraform plan
 ```
 
+## 🔄 Dependency Management
+
+This project uses:
+- **mise**: Runtime version management for consistent tool versions
+- **Renovate**: Automated dependency updates via pull requests
+
+Dependencies are automatically updated weekly. See [docs/dependency-management.md](docs/dependency-management.md) for details.
+
 ## 📖 Additional Resources
 
 - [OpenTofu Documentation](https://opentofu.org/docs/)
 - [AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
 - [1Password CLI Documentation](https://developer.1password.com/docs/cli/)
+- [mise Documentation](https://mise.jdx.dev)
+- [Renovate Documentation](https://docs.renovatebot.com/)
 
 ## 🤝 Contributing
 

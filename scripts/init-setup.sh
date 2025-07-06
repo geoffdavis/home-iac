@@ -16,43 +16,75 @@ echo "======================================"
 # Check prerequisites
 echo -e "\n${YELLOW}Checking prerequisites...${NC}"
 
-# Check OpenTofu/Terraform
-if command -v tofu &> /dev/null; then
-    echo -e "${GREEN}✓${NC} OpenTofu is installed"
-    TF_CMD="tofu"
-elif command -v terraform &> /dev/null; then
-    echo -e "${GREEN}✓${NC} Terraform is installed (using as fallback)"
-    TF_CMD="terraform"
+# Check if mise is available and configured
+if command -v mise &> /dev/null && [ -f ".mise.toml" ]; then
+    echo -e "${GREEN}✓${NC} mise is installed - using mise-managed tools"
+    MISE_AVAILABLE=true
+    # Use mise exec to run commands through mise
+    TOFU_CMD="mise exec -- tofu"
+    AWS_CMD="mise exec -- aws"
+    OP_CMD="mise exec -- op"
+    JQ_CMD="mise exec -- jq"
+    
+    # Ensure mise tools are installed
+    echo -e "${YELLOW}Ensuring mise tools are installed...${NC}"
+    mise install
 else
-    echo -e "${RED}✗${NC} Neither OpenTofu nor Terraform is installed"
-    exit 1
+    echo -e "${YELLOW}!${NC} mise is not installed - checking for tools in PATH"
+    MISE_AVAILABLE=false
+    
+    # Check OpenTofu
+    if command -v tofu &> /dev/null; then
+        echo -e "${GREEN}✓${NC} OpenTofu is installed"
+        TOFU_CMD="tofu"
+    else
+        echo -e "${RED}✗${NC} OpenTofu is not installed"
+        echo "Please install OpenTofu or run ./scripts/setup-mise.sh"
+        exit 1
+    fi
+    
+    AWS_CMD="aws"
+    OP_CMD="op"
+    JQ_CMD="jq"
 fi
 
 # Check AWS CLI
-if ! command -v aws &> /dev/null; then
+if ! $AWS_CMD --version &> /dev/null; then
     echo -e "${RED}✗${NC} AWS CLI is not installed"
-    echo "Please install AWS CLI: https://aws.amazon.com/cli/"
+    if [ "$MISE_AVAILABLE" = true ]; then
+        echo "Run 'mise install' to install AWS CLI"
+    else
+        echo "Please install AWS CLI: https://aws.amazon.com/cli/"
+    fi
     exit 1
 else
-    echo -e "${GREEN}✓${NC} AWS CLI is installed"
+    echo -e "${GREEN}✓${NC} AWS CLI is available"
 fi
 
 # Check 1Password CLI
-if ! command -v op &> /dev/null; then
+if ! $OP_CMD --version &> /dev/null; then
     echo -e "${RED}✗${NC} 1Password CLI is not installed"
-    echo "Please install 1Password CLI: https://developer.1password.com/docs/cli/get-started/"
+    if [ "$MISE_AVAILABLE" = true ]; then
+        echo "Run 'mise install' to install 1Password CLI"
+    else
+        echo "Please install 1Password CLI: https://developer.1password.com/docs/cli/get-started/"
+    fi
     exit 1
 else
-    echo -e "${GREEN}✓${NC} 1Password CLI is installed"
+    echo -e "${GREEN}✓${NC} 1Password CLI is available"
 fi
 
 # Check jq
-if ! command -v jq &> /dev/null; then
+if ! $JQ_CMD --version &> /dev/null; then
     echo -e "${RED}✗${NC} jq is not installed"
-    echo "Please install jq: https://stedolan.github.io/jq/download/"
+    if [ "$MISE_AVAILABLE" = true ]; then
+        echo "Run 'mise install' to install jq"
+    else
+        echo "Please install jq: https://stedolan.github.io/jq/download/"
+    fi
     exit 1
 else
-    echo -e "${GREEN}✓${NC} jq is installed"
+    echo -e "${GREEN}✓${NC} jq is available"
 fi
 
 # Step 1: Setup environment
@@ -85,14 +117,14 @@ echo -e "${GREEN}✓${NC} Environment configured"
 # Step 2: Check 1Password authentication
 echo -e "\n${YELLOW}Step 2: Checking 1Password authentication...${NC}"
 
-if ! op account list | grep -q "$OP_ACCOUNT"; then
+if ! $OP_CMD account list | grep -q "$OP_ACCOUNT"; then
     echo -e "${YELLOW}!${NC} Not signed in to 1Password. Attempting to sign in..."
-    op signin
+    $OP_CMD signin
 fi
 
 # Test 1Password access
 echo -e "Testing access to AWS credentials in 1Password..."
-if op item get "${OP_AWS_ITEM}" --vault "${OP_AWS_VAULT}" &> /dev/null; then
+if $OP_CMD item get "${OP_AWS_ITEM}" --vault "${OP_AWS_VAULT}" &> /dev/null; then
     echo -e "${GREEN}✓${NC} Successfully accessed AWS credentials in 1Password"
 else
     echo -e "${RED}✗${NC} Could not access '${OP_AWS_ITEM}' in ${OP_AWS_VAULT} vault"
@@ -112,12 +144,12 @@ echo "Retrieving AWS credentials from 1Password..."
 # Use environment variables for 1Password paths
 if [ -n "${OP_AWS_SECTION:-}" ]; then
     # With section
-    AWS_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
-    AWS_SECRET_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
+    AWS_ACCESS_KEY=$($OP_CMD read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
+    AWS_SECRET_KEY=$($OP_CMD read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
 else
     # Without section
-    AWS_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}")
-    AWS_SECRET_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}")
+    AWS_ACCESS_KEY=$($OP_CMD read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}")
+    AWS_SECRET_KEY=$($OP_CMD read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}")
 fi
 
 if [ -z "$AWS_ACCESS_KEY" ] || [ -z "$AWS_SECRET_KEY" ]; then
@@ -132,9 +164,9 @@ fi
 export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY"
 
-if aws sts get-caller-identity &> /dev/null; then
+if $AWS_CMD sts get-caller-identity &> /dev/null; then
     echo -e "${GREEN}✓${NC} AWS credentials are valid"
-    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    ACCOUNT_ID=$($AWS_CMD sts get-caller-identity --query Account --output text)
     echo -e "  Account ID: ${BLUE}$ACCOUNT_ID${NC}"
 else
     echo -e "${RED}✗${NC} AWS credentials are invalid or expired"
@@ -147,7 +179,7 @@ echo -e "\n${YELLOW}Step 4: Initializing OpenTofu...${NC}"
 cd environments/dev
 
 # Initialize with local backend first
-if $TF_CMD init; then
+if $TOFU_CMD init; then
     echo -e "${GREEN}✓${NC} OpenTofu initialized successfully"
 else
     echo -e "${RED}✗${NC} OpenTofu initialization failed"

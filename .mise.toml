@@ -1,0 +1,20 @@
+[tools]
+# Infrastructure as Code
+opentofu = "1.8.8"
+
+# AWS Tools
+awscli = "2.22.21"
+
+# Security Tools
+"1password-cli" = "2.30.3"
+
+# Utilities
+jq = "1.7.1"
+
+[env]
+# Add scripts directory to PATH
+_.path = ["./scripts"]
+
+[settings]
+# Automatically install tools when entering directory
+experimental = true
