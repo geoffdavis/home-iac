@@ -191,6 +191,44 @@ tasks:
     cmds:
       - ./scripts/test-renovate-config.sh
 
+  # Longhorn S3 backup verification
+  longhorn:verify:
+    desc: Verify Longhorn S3 backup permissions
+    cmds:
+      - |
+        echo "Checking for Longhorn credentials in 1Password..."
+        if ./scripts/verify-existing-longhorn-permissions.sh; then
+          echo "✓ Longhorn permissions verified using existing credentials"
+        else
+          echo "Could not verify using 1Password credentials"
+          echo "Please see: docs/verify-longhorn-permissions-checklist.md"
+          echo "Or create new IAM resources with: task longhorn:create-iam"
+        fi
+
+  longhorn:create-iam:
+    desc: Create IAM resources for Longhorn S3 backup
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - echo "Creating IAM resources for Longhorn..."
+      - tofu apply -target=aws_iam_user.longhorn_backup -target=aws_iam_access_key.longhorn_backup -target=aws_iam_policy.longhorn_backup_s3_access -target=aws_iam_user_policy_attachment.longhorn_backup_s3_access
+      - echo "✓ IAM resources created. Run 'task longhorn:show-config' to see configuration details"
+
+  longhorn:show-config:
+    desc: Show Longhorn S3 backup configuration
+    dir: '{{.TF_DIR}}'
+    cmds:
+      - |
+        echo "Longhorn S3 Backup Configuration:"
+        echo "================================"
+        echo ""
+        tofu output longhorn_configuration_instructions 2>/dev/null || echo "No Longhorn configuration found. Run 'task longhorn:create-iam' first."
+
   # State management
   state:list:
     desc: List resources in Terraform state
