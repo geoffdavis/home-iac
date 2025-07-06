@@ -211,9 +211,31 @@ tasks:
     deps: [aws:auth]
     env:
       AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+        sh: |
+          # Find repository root by looking for Taskfile.yml
+          REPO_ROOT=$(pwd)
+          while [ "$REPO_ROOT" != "/" ] && [ ! -f "$REPO_ROOT/Taskfile.yml" ]; do
+            REPO_ROOT=$(dirname "$REPO_ROOT")
+          done
+          if [ -f "$REPO_ROOT/.env" ]; then
+            source "$REPO_ROOT/.env" && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+          else
+            echo "Error: .env not found" >&2
+            exit 1
+          fi
       AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+        sh: |
+          # Find repository root by looking for Taskfile.yml
+          REPO_ROOT=$(pwd)
+          while [ "$REPO_ROOT" != "/" ] && [ ! -f "$REPO_ROOT/Taskfile.yml" ]; do
+            REPO_ROOT=$(dirname "$REPO_ROOT")
+          done
+          if [ -f "$REPO_ROOT/.env" ]; then
+            source "$REPO_ROOT/.env" && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+          else
+            echo "Error: .env not found" >&2
+            exit 1
+          fi
     cmds:
       - echo "Creating IAM resources for Longhorn..."
       - tofu apply -target=aws_iam_user.longhorn_backup -target=aws_iam_access_key.longhorn_backup -target=aws_iam_policy.longhorn_backup_s3_access -target=aws_iam_user_policy_attachment.longhorn_backup_s3_access
