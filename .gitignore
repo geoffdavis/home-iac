@@ -1,0 +1,37 @@
+# Environment variables
+.env
+.env.local
+
+# Terraform/OpenTofu
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+terraform.rc
+.terraformrc
+
+# Discovery output
+discovered-buckets.json
+scripts/import-s3-buckets.sh
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

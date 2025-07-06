@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "OpenTofu Init",
+      "type": "shell",
+      "command": "tofu init",
+      "args": [],
+      "options": {
+        "cwd": "${workspaceFolder}/environments/dev"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "OpenTofu Plan",
+      "type": "shell",
+      "command": "tofu plan",
+      "args": [],
+      "options": {
+        "cwd": "${workspaceFolder}/environments/dev"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "OpenTofu Apply",
+      "type": "shell",
+      "command": "tofu apply",
+      "args": ["-auto-approve"],
+      "options": {
+        "cwd": "${workspaceFolder}/environments/dev"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
