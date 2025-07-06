@@ -13,13 +13,10 @@ cp .env.example .env
 source .env
 ./scripts/init-setup.sh
 
-# 3. Set AWS credentials from 1Password
-source scripts/set-aws-credentials.sh
-
-# 4. Run OpenTofu
-cd environments/dev
-tofu plan
-tofu apply
+# 3. Run tasks with the Taskfile
+task setup          # Complete setup
+task plan           # Plan changes
+task apply          # Apply changes
 ```
 
 ## 📋 Prerequisites
@@ -170,17 +167,31 @@ cd environments/dev
 ../../scripts/import-with-credentials.sh
 ```
 
-### Set AWS Credentials
+### Using Task Commands
+
+This project includes a comprehensive Taskfile for common operations:
 
 ```bash
-# Option 1: Use the convenience script (recommended)
-source scripts/set-aws-credentials.sh
+# Show all available tasks
+task --list-all
 
-# Option 2: Set manually
-source .env
-export AWS_ACCESS_KEY_ID=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
-export AWS_SECRET_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
+# Common workflows
+task setup          # Initial setup
+task plan           # Plan infrastructure changes
+task apply          # Apply changes
+task fmt            # Format code
+task validate       # Validate configuration
+
+# AWS operations
+task aws:whoami     # Show current AWS identity
+task s3:discover    # Discover S3 buckets
+
+# Dependency management
+task deps:check     # Check for updates
+task deps:update    # Update dependencies
 ```
+
+AWS credentials are automatically loaded from 1Password when needed.
 
 ### Add New S3 Bucket
 

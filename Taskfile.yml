@@ -1,0 +1,303 @@
+version: '3'
+
+vars:
+  ENVIRONMENT: '{{.ENVIRONMENT | default "dev"}}'
+  TF_DIR: 'environments/{{.ENVIRONMENT}}'
+
+env:
+  AWS_REGION: '{{.AWS_REGION | default "us-west-2"}}'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list-all
+
+  # Setup and initialization tasks
+  setup:
+    desc: Complete initial setup (install tools, configure environment)
+    cmds:
+      - task: setup:mise
+      - task: setup:env
+      - task: init
+
+  setup:mise:
+    desc: Install mise and all required tools
+    cmds:
+      - ./scripts/setup-mise.sh
+      - mise install
+    sources:
+      - .mise.toml
+    preconditions:
+      - sh: test -f scripts/setup-mise.sh
+        msg: "setup-mise.sh script not found"
+
+  setup:env:
+    desc: Setup environment variables from example
+    cmds:
+      - cp -n .env.example .env || true
+      - echo "✓ Environment file ready. Please edit .env with your 1Password configuration."
+    sources:
+      - .env.example
+    generates:
+      - .env
+
+  # Terraform/OpenTofu tasks
+  init:
+    desc: Initialize OpenTofu with backend configuration
+    dir: '{{.TF_DIR}}'
+    cmds:
+      - echo "Initializing OpenTofu in {{.TF_DIR}}..."
+      - tofu init
+    sources:
+      - '{{.TF_DIR}}/*.tf'
+      - '{{.TF_DIR}}/.terraform.lock.hcl'
+
+  plan:
+    desc: Create an execution plan for OpenTofu changes
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - tofu plan -out=tfplan
+    sources:
+      - '{{.TF_DIR}}/*.tf'
+      - modules/**/*.tf
+
+  apply:
+    desc: Apply the OpenTofu changes
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - tofu apply tfplan
+    preconditions:
+      - sh: test -f {{.TF_DIR}}/tfplan
+        msg: "No plan file found. Run 'task plan' first."
+
+  destroy:
+    desc: Destroy all managed infrastructure (use with caution!)
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    prompt: This will destroy all infrastructure. Are you sure?
+    cmds:
+      - tofu destroy -auto-approve
+
+  fmt:
+    desc: Format all Terraform files
+    cmds:
+      - tofu fmt -recursive .
+    sources:
+      - '**/*.tf'
+
+  validate:
+    desc: Validate Terraform configuration
+    dir: '{{.TF_DIR}}'
+    cmds:
+      - tofu validate
+
+  # AWS credential management
+  aws:auth:
+    desc: Set AWS credentials from 1Password
+    cmds:
+      - echo "✓ AWS credentials loaded from 1Password"
+    silent: true
+
+  aws:whoami:
+    desc: Show current AWS identity
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - aws sts get-caller-identity
+    preconditions:
+      - sh: test -f .env
+        msg: "Environment file not found. Run 'task setup:env' first."
+
+  # S3 bucket management
+  s3:discover:
+    desc: Discover existing S3 buckets and generate import configuration
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - ./scripts/discover-s3-buckets.sh
+      - echo "✓ Discovered buckets saved to discovered-buckets.json"
+    generates:
+      - discovered-buckets.json
+
+  s3:import:
+    desc: Import discovered S3 buckets into Terraform state
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - cd {{.TF_DIR}} && ../../scripts/import-with-credentials.sh
+    preconditions:
+      - sh: test -f ../../discovered-buckets.json
+        msg: "No discovered buckets found. Run 'task s3:discover' first."
+
+  # Dependency management
+  deps:check:
+    desc: Check for dependency updates using Renovate
+    cmds:
+      - DRY_RUN=true ./scripts/run-renovate.sh
+    preconditions:
+      - sh: test -f scripts/run-renovate.sh
+        msg: "Renovate script not found"
+
+  deps:update:
+    desc: Run Renovate to create/update dependency PRs
+    cmds:
+      - ./scripts/run-renovate.sh
+      - echo "✓ Check GitHub for new pull requests"
+
+  deps:test:
+    desc: Test Renovate configuration
+    cmds:
+      - ./scripts/test-renovate-config.sh
+
+  # State management
+  state:list:
+    desc: List resources in Terraform state
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - tofu state list
+
+  state:lock:
+    desc: Lock the Terraform state
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - tofu state lock
+
+  state:unlock:
+    desc: Unlock the Terraform state
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    vars:
+      LOCK_ID: '{{.LOCK_ID}}'
+    cmds:
+      - tofu state unlock {{.LOCK_ID}}
+    requires:
+      vars: [LOCK_ID]
+
+  # Utility tasks
+  clean:
+    desc: Clean up generated files and caches
+    cmds:
+      - rm -rf environments/*/.terraform
+      - rm -f environments/*/tfplan
+      - rm -f environments/*/.terraform.lock.hcl
+      - rm -f discovered-buckets.json
+      - rm -f scripts/import-s3-buckets.sh
+      - echo "✓ Cleaned up temporary files"
+
+  console:
+    desc: Open an interactive OpenTofu console
+    dir: '{{.TF_DIR}}'
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    interactive: true
+    cmds:
+      - tofu console
+
+  docs:
+    desc: Generate documentation for Terraform modules
+    cmds:
+      - echo "Generating module documentation..."
+      - |
+        for module in modules/*/; do
+          if [ -d "$module" ]; then
+            echo "Documenting $module..."
+            # Add terraform-docs command here if available
+          fi
+        done
+
+  # CI/CD tasks
+  ci:
+    desc: Run all CI checks (format, validate, plan)
+    cmds:
+      - task: fmt
+      - task: validate
+      - task: plan
+
+  pre-commit:
+    desc: Run pre-commit checks
+    cmds:
+      - task: fmt
+      - task: validate
+      - echo "✓ Pre-commit checks passed"
+
+  # Environment-specific shortcuts
+  dev:plan:
+    desc: Plan changes for dev environment
+    cmds:
+      - task: plan
+    vars:
+      ENVIRONMENT: dev
+
+  dev:apply:
+    desc: Apply changes to dev environment
+    cmds:
+      - task: apply
+    vars:
+      ENVIRONMENT: dev
+
+  prod:plan:
+    desc: Plan changes for production environment
+    cmds:
+      - task: plan
+    vars:
+      ENVIRONMENT: prod
+
+  prod:apply:
+    desc: Apply changes to production environment
+    cmds:
+      - task: apply
+    vars:
+      ENVIRONMENT: prod
+    prompt: This will apply changes to PRODUCTION. Are you sure?

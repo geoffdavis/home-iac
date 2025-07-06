@@ -28,11 +28,13 @@
         "opentofu\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "awscli\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "\"1password-cli\"\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
-        "jq\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\""
+        "jq\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\"",
+        "node\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "task\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
-      "depNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu{{else if (equals depName 'awscli')}}awscli{{else if (equals depName '1password-cli')}}1password-cli{{else}}jq{{/if}}",
-      "datasourceTemplate": "github-releases",
-      "packageNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu/opentofu{{else if (equals depName '1password-cli')}}1Password/op{{else if (equals depName 'jq')}}jqlang/jq{{else}}aws/aws-cli{{/if}}"
+      "depNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu{{else if (equals depName 'awscli')}}awscli{{else if (equals depName '1password-cli')}}1password-cli{{else if (equals depName 'jq')}}jq{{else if (equals depName 'node')}}node{{else}}task{{/if}}",
+      "datasourceTemplate": "{{#if (equals depName 'node')}}node-version{{else}}github-releases{{/if}}",
+      "packageNameTemplate": "{{#if (equals depName 'opentofu')}}opentofu/opentofu{{else if (equals depName '1password-cli')}}1Password/op{{else if (equals depName 'jq')}}jqlang/jq{{else if (equals depName 'awscli')}}aws/aws-cli{{else if (equals depName 'node')}}node{{else}}go-task/task{{/if}}"
     }
   ],
   "packageRules": [
