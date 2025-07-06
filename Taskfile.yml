@@ -161,19 +161,30 @@ tasks:
         msg: "No discovered buckets found. Run 'task s3:discover' first."
 
   # Dependency management
-  deps:check:
-    desc: Check for dependency updates using Renovate
+  renovate:
+    desc: Run Renovate to check and update dependencies
+    cmds:
+      - ./scripts/run-renovate.sh
+      - echo "✓ Check GitHub for new pull requests"
+    preconditions:
+      - sh: test -f scripts/run-renovate.sh
+        msg: "Renovate script not found"
+
+  renovate:dry-run:
+    desc: Run Renovate in dry-run mode to preview updates
     cmds:
       - DRY_RUN=true ./scripts/run-renovate.sh
     preconditions:
       - sh: test -f scripts/run-renovate.sh
         msg: "Renovate script not found"
 
+  deps:check:
+    desc: Check for dependency updates using Renovate (alias for renovate:dry-run)
+    deps: [renovate:dry-run]
+
   deps:update:
-    desc: Run Renovate to create/update dependency PRs
-    cmds:
-      - ./scripts/run-renovate.sh
-      - echo "✓ Check GitHub for new pull requests"
+    desc: Run Renovate to create/update dependency PRs (alias for renovate)
+    deps: [renovate]
 
   deps:test:
     desc: Test Renovate configuration
