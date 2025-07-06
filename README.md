@@ -1,190 +1,256 @@
-# OpenTofu GitOps Repository for AWS S3 Management
+# OpenTofu Infrastructure as Code for AWS S3 Management
 
 This repository manages AWS S3 infrastructure using OpenTofu (Terraform-compatible) with 1Password integration for secure credential management.
 
-## Features
+## 🚀 Quick Start
 
-- 🔐 **Secure credential management** with 1Password CLI integration
-- 🪣 **S3 bucket management** with comprehensive configuration options
-- 👥 **IAM access management** for role-based bucket access
-- 🔍 **Discovery tooling** to import existing S3 buckets
-- 📊 **State management** with S3 backend and DynamoDB locking
-- 📚 **Comprehensive documentation** for setup and usage
+```bash
+# 1. Set up environment
+cp .env.example .env
+# Edit .env with your 1Password account
 
-## Repository Structure
+# 2. Source environment and run setup
+source .env
+./scripts/init-setup.sh
+
+# 3. Set AWS credentials from 1Password (using vars from .env)
+export AWS_ACCESS_KEY_ID=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}")
+export AWS_SECRET_ACCESS_KEY=$(op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}")
+
+# 4. Run OpenTofu
+cd environments/dev
+tofu plan
+tofu apply
+```
+
+## 📋 Prerequisites
+
+- **OpenTofu** or Terraform (v1.5.0+)
+- **AWS CLI** configured
+- **1Password CLI** installed and configured
+- **jq** for JSON processing
+- AWS credentials stored in 1Password (configure location in .env)
+
+## 🏗️ Architecture
+
+### Repository Structure
 
 ```
 .
-├── environments/          # Per-environment configurations
+├── environments/          # Environment-specific configurations
 │   └── dev/              # Development environment
-│       ├── main.tf       # Main configuration with providers
-│       ├── backend.tf    # State backend configuration
-│       └── versions.tf   # Provider version constraints
+│       ├── main.tf       # Provider configuration
+│       ├── backend.tf    # S3 + DynamoDB state backend
+│       ├── s3-buckets.tf # S3 bucket configurations
+│       └── state-backend.tf # State storage infrastructure
 ├── modules/              # Reusable OpenTofu modules
-│   ├── s3-buckets/      # S3 bucket management module
-│   └── s3-iam-access/   # IAM access policies module
-├── scripts/             # Utility scripts
-│   └── discover-s3-buckets.sh  # Discover existing S3 buckets
-└── docs/                # Documentation
-    ├── setup-guide.md   # Complete setup instructions
-    └── 1password-setup.md  # 1Password configuration guide
+│   ├── s3-buckets/      # S3 bucket management
+│   └── s3-iam-access/   # IAM access policies
+├── scripts/             # Automation scripts
+│   ├── init-setup.sh    # Initial setup script
+│   ├── discover-s3-buckets.sh # S3 discovery
+│   └── import-with-credentials.sh # Import helper
+└── docs/                # Additional documentation
 ```
 
-## Quick Start
+### State Management
 
-1. **Prerequisites**
-   - Install [OpenTofu](https://opentofu.org/)
-   - Install [1Password CLI](https://developer.1password.com/docs/cli/)
-   - Configure AWS CLI with appropriate permissions
-   - Install `jq` for JSON processing
+- **State Storage**: S3 bucket `opentofu-state-home-iac-078129923125`
+- **State Locking**: DynamoDB table `opentofu-state-locks-home-iac`
+- **Encryption**: AES256 at rest
+- **Versioning**: Enabled for state history
 
-2. **Initial Setup**
-   ```bash
-   # Clone the repository
-   git clone <repository-url>
-   cd home-iac
+## 🔧 Configuration
 
-   # Set up environment
-   cp .env.example .env
-   # Edit .env with your 1Password account name
+### 1Password Setup
 
-   # Follow the setup guide
-   open docs/setup-guide.md
-   ```
+Your AWS credentials must be stored in 1Password. Configure the location in `.env`:
+```bash
+OP_AWS_VAULT=Private
+OP_AWS_ITEM="AWS Access Key - S3 - Personal"
+OP_AWS_ACCESS_KEY_FIELD="access key id"
+OP_AWS_SECRET_KEY_FIELD="secret access key"
+OP_AWS_SECTION="Section_name"  # If using sections
+```
 
-3. **Discover Existing Buckets**
-   ```bash
-   ./scripts/discover-s3-buckets.sh
-   ```
+### Environment Variables
 
-4. **Initialize and Import**
-   ```bash
-   cd environments/dev
-   tofu init
-   # Run the generated import script
-   ../../scripts/import-s3-buckets.sh
-   ```
+Copy and update `.env` file:
+```bash
+cp .env.example .env
+# Edit .env with your 1Password configuration
+```
 
-## Key Components
+### AWS IAM Requirements
+
+Your IAM user needs:
+- **S3 Permissions**: Full access to S3 buckets
+- **DynamoDB Permissions**: For state locking (see `docs/complete-dynamodb-permissions.json`)
+
+## 📚 Module Documentation
 
 ### S3 Buckets Module
 
 Manages S3 buckets with support for:
-- Versioning
-- Server-side encryption (SSE-S3, SSE-KMS)
+- Versioning and encryption
 - Lifecycle rules
 - Public access blocks
 - Bucket policies
 - Tags
 
-### S3 IAM Access Module
-
-Manages IAM access to S3 buckets:
-- Role-based access policies
-- Cross-account access
-- Granular permissions
-- Path-based restrictions
-
-### 1Password Integration
-
-Securely manages AWS credentials:
-- No hardcoded credentials in code
-- Credentials stored in 1Password vault
-- Retrieved at runtime via 1Password CLI
-
-## Usage Examples
-
-### Managing S3 Buckets
-
+Example usage:
 ```hcl
 module "s3_buckets" {
   source = "../../modules/s3-buckets"
   
   buckets = {
-    my_app_data = {
-      bucket_name = "my-unique-app-data-bucket"
+    my_bucket = {
+      bucket_name = "my-unique-bucket-name"
       versioning  = true
       
       server_side_encryption = {
-        algorithm = "AES256"
+        algorithm          = "AES256"
+        bucket_key_enabled = true
       }
       
-      lifecycle_rules = [{
-        id              = "expire-old-versions"
-        enabled         = true
-        noncurrent_expiration_days = 90
-      }]
+      tags = {
+        Purpose = "Data Storage"
+      }
     }
   }
 }
 ```
 
-### Configuring IAM Access
+### S3 IAM Access Module
 
+Manages IAM access to S3 buckets:
 ```hcl
 module "s3_iam_access" {
   source = "../../modules/s3-iam-access"
   
   bucket_access_configs = {
-    my_app_data = {
-      bucket_name = "my-unique-app-data-bucket"
-      bucket_arn  = module.s3_buckets.bucket_arns["my_app_data"]
+    my_bucket = {
+      bucket_name = "my-unique-bucket-name"
+      bucket_arn  = module.s3_buckets.bucket_arns["my_bucket"]
       
       role_access = [{
         role_name   = "MyApplicationRole"
         role_arn    = "arn:aws:iam::123456789012:role/MyApplicationRole"
         permissions = ["s3:GetObject", "s3:PutObject"]
-        prefix      = "app-data/"
       }]
     }
   }
 }
 ```
 
-## Best Practices
+## 🔄 Common Operations
 
-1. **Version Control**
-   - Use branches and PRs for all changes
-   - Review plans before applying
-   - Tag releases for production deployments
+### Import Existing S3 Buckets
 
-2. **Security**
-   - Never commit credentials to Git
-   - Use least-privilege IAM policies
-   - Enable bucket encryption
-   - Regular security audits
+```bash
+# Discover existing buckets
+./scripts/discover-s3-buckets.sh
 
-3. **State Management**
-   - Use remote state with locking
-   - Regular state backups
-   - Avoid manual state modifications
+# Review discovered configuration
+cat discovered-buckets.json
 
-4. **Resource Organization**
-   - Use consistent naming conventions
-   - Tag all resources appropriately
-   - Separate environments (dev, staging, prod)
+# Import buckets
+cd environments/dev
+../../scripts/import-with-credentials.sh
+```
 
-## CI/CD Integration
+### Add New S3 Bucket
 
-This repository is designed for GitOps workflows:
+1. Add configuration to `environments/dev/s3-buckets.tf`
+2. Run `tofu plan` to preview
+3. Run `tofu apply` to create
 
-1. Developer creates branch with changes
-2. CI runs `tofu plan` and posts results to PR
-3. After review and approval, merge to main
-4. CD runs `tofu apply` automatically
+### Enable State Locking
 
-## Troubleshooting
+If you have DynamoDB permissions:
+```bash
+./scripts/setup-dynamodb-locking.sh
+```
 
-See the [Setup Guide](docs/setup-guide.md#troubleshooting) for common issues and solutions.
+## 🛠️ Troubleshooting
 
-## Contributing
+### 1Password Authentication Issues
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run `tofu fmt` and `tofu validate`
-5. Create a pull request
+```bash
+# Ensure you're signed in
+op signin
 
-## License
+# Test credential access (using vars from .env)
+source .env
+op item get "${OP_AWS_ITEM}" --vault "${OP_AWS_VAULT}"
+```
 
-[Your license here]
+### AWS Credentials Not Working
+
+Check the 1Password item structure matches your .env configuration:
+- Verify vault name, item name, and field names in .env
+- Update OP_AWS_SECTION if your item uses sections
+
+### State Lock Errors
+
+If DynamoDB locking fails:
+1. Check IAM permissions (see `docs/complete-dynamodb-permissions.json`)
+2. Verify table exists: `aws dynamodb list-tables --region us-west-2`
+3. Force unlock if needed: `tofu force-unlock <LOCK_ID>`
+
+## 🔐 Security Best Practices
+
+1. **Never commit credentials** - Use 1Password integration
+2. **Use least-privilege IAM policies**
+3. **Enable bucket encryption** for all S3 buckets
+4. **Enable versioning** for critical buckets
+5. **Regular credential rotation**
+6. **Use separate AWS accounts** for different environments
+
+## 🚢 CI/CD Integration
+
+For GitOps workflows:
+
+1. Store AWS credentials in CI/CD secrets
+2. Use PR checks to run `tofu plan`
+3. Apply changes on merge to main
+4. Use workspaces for multiple environments
+
+Example GitHub Actions workflow:
+```yaml
+name: Terraform Plan
+on: [pull_request]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2
+      
+      - name: Terraform Plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          cd environments/dev
+          terraform init
+          terraform plan
+```
+
+## 📖 Additional Resources
+
+- [OpenTofu Documentation](https://opentofu.org/docs/)
+- [AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
+- [1Password CLI Documentation](https://developer.1password.com/docs/cli/)
+
+## 🤝 Contributing
+
+1. Create feature branch
+2. Make changes
+3. Run `tofu fmt` and `tofu validate`
+4. Submit PR with plan output
+
+---
+
+For detailed setup instructions, see [docs/setup-guide.md](docs/setup-guide.md)

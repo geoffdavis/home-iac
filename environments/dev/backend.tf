@@ -1,10 +1,11 @@
 # Backend configuration for OpenTofu state management
 terraform {
   backend "s3" {
-    bucket         = "your-terraform-state-bucket" # Replace with your state bucket name
-    key            = "home-iac/dev/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-state-lock" # Optional: for state locking
+    bucket  = "opentofu-state-home-iac-078129923125"
+    key     = "home-iac/dev/terraform.tfstate"
+    region  = "us-west-2"
+    encrypt = true
+    # DynamoDB table for locking is optional and requires additional permissions
+    dynamodb_table = "opentofu-state-locks-home-iac"
   }
 }

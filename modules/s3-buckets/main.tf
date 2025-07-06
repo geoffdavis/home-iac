@@ -14,8 +14,9 @@ variable "buckets" {
       noncurrent_expiration_days = optional(number)
     })), [])
     server_side_encryption = optional(object({
-      algorithm     = string
-      kms_master_key_id = optional(string)
+      algorithm          = string
+      kms_master_key_id  = optional(string)
+      bucket_key_enabled = optional(bool, false)
     }))
     public_access_block = optional(object({
       block_public_acls       = optional(bool, true)
@@ -79,6 +80,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
       sse_algorithm     = each.value.server_side_encryption.algorithm
       kms_master_key_id = each.value.server_side_encryption.kms_master_key_id
     }
+    bucket_key_enabled = each.value.server_side_encryption.bucket_key_enabled
   }
 }
 

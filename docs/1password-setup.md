@@ -47,22 +47,25 @@ export OP_ACCOUNT="your-account-name"
 
 ## AWS Credentials in 1Password
 
-Your AWS credentials should be stored in 1Password with the following structure:
+Your AWS credentials should be stored in 1Password. The location and field names are configured in your `.env` file:
 
-**Vault:** Private  
-**Item Title:** AWS Access Key - S3 - Personal  
-**Fields:**
-- Access Key ID (in the first field)
-- Secret Access Key (in the second field)
+```bash
+# Example .env configuration
+OP_AWS_VAULT=Private
+OP_AWS_ITEM="AWS Access Key - S3 - Personal"
+OP_AWS_ACCESS_KEY_FIELD="access key id"
+OP_AWS_SECRET_KEY_FIELD="secret access key"
+OP_AWS_SECTION="Section_name"  # If your item uses sections
+```
 
 ### Creating the 1Password Item
 
 1. Open 1Password
 2. Create a new "Login" or "API Credential" item
-3. Set the title to "AWS Access Key - S3 - Personal"
-4. Add your AWS Access Key ID as the first field
-5. Add your AWS Secret Access Key as the second field
-6. Save in the "Private" vault
+3. Set the title to match `OP_AWS_ITEM` in your .env
+4. Add your AWS Access Key ID with a field name matching `OP_AWS_ACCESS_KEY_FIELD`
+5. Add your AWS Secret Access Key with a field name matching `OP_AWS_SECRET_KEY_FIELD`
+6. Save in the vault specified by `OP_AWS_VAULT`
 
 ## Testing the Integration
 
@@ -73,7 +76,8 @@ Your AWS credentials should be stored in 1Password with the following structure:
 
 2. Test 1Password CLI:
    ```bash
-   op item get "AWS Access Key - S3 - Personal" --vault Private
+   source .env
+   op item get "${OP_AWS_ITEM}" --vault "${OP_AWS_VAULT}"
    ```
 
 3. Initialize OpenTofu:
@@ -90,9 +94,10 @@ Your AWS credentials should be stored in 1Password with the following structure:
 - Verify the item exists in the correct vault
 
 ### Issue: AWS credentials not found
-- Verify the item title matches exactly: "AWS Access Key - S3 - Personal"
-- Check the vault name is "Private"
-- Ensure fields are in the correct order (Access Key ID first, Secret Key second)
+- Verify the item title matches `OP_AWS_ITEM` in your .env
+- Check the vault name matches `OP_AWS_VAULT` in your .env
+- Ensure field names match your .env configuration
+- If using sections, verify `OP_AWS_SECTION` is set correctly
 
 ## Security Best Practices
 

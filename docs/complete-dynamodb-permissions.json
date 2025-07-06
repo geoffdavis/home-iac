@@ -1,0 +1,31 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "OpenTofuStateLockingComplete",
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:CreateTable",
+                "dynamodb:DeleteTable",
+                "dynamodb:DescribeTable",
+                "dynamodb:DescribeTimeToLive",
+                "dynamodb:DescribeContinuousBackups",
+                "dynamodb:ListTagsOfResource",
+                "dynamodb:TagResource",
+                "dynamodb:UntagResource",
+                "dynamodb:UpdateTable",
+                "dynamodb:UpdateTimeToLive",
+                "dynamodb:UpdateContinuousBackups",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+            ],
+            "Resource": [
+                "arn:aws:dynamodb:us-west-2:078129923125:table/opentofu-state-locks-home-iac",
+                "arn:aws:dynamodb:us-west-2:078129923125:table/opentofu-state-locks-home-iac/*"
+            ]
+        }
+    ]
+}
