@@ -49,6 +49,39 @@ module "s3_buckets" {
         purpose     = "kubernetes-backups"
       }
     }
+    
+    # PostgreSQL backups bucket
+    postgresql_backup_home_ops = {
+      bucket_name = "postgresql-backup-home-ops"
+      acl         = "private"
+      
+      server_side_encryption = {
+        algorithm          = "AES256"
+        bucket_key_enabled = true
+      }
+      
+      public_access_block = {
+        block_public_acls       = true
+        block_public_policy     = true
+        ignore_public_acls      = true
+        restrict_public_buckets = true
+      }
+      
+      lifecycle_rules = [
+        {
+          id                         = "postgresql_backup_retention"
+          enabled                    = true
+          prefix                     = ""
+          expiration_days            = 90
+          noncurrent_expiration_days = 30
+        }
+      ]
+      
+      tags = {
+        application = "postgresql"
+        purpose     = "database-backups"
+      }
+    }
   }
   
   common_tags = local.common_tags

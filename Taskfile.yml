@@ -251,6 +251,98 @@ tasks:
         echo ""
         tofu output longhorn_configuration_instructions 2>/dev/null || echo "No Longhorn configuration found. Run 'task longhorn:create-iam' first."
 
+  # Credential management
+  creds:list:
+    desc: List all available credential services
+    cmds:
+      - python3 scripts/update-credentials.py --list
+
+  creds:update:
+    desc: Update credentials for a specific service
+    cmds:
+      - python3 scripts/update-credentials.py {{.SERVICE}}
+    requires:
+      vars: [SERVICE]
+    preconditions:
+      - sh: test -f scripts/update-credentials.py
+        msg: "Credential management script not found"
+
+  creds:postgresql:
+    desc: Update PostgreSQL backup credentials
+    cmds:
+      - task: creds:update
+        vars:
+          SERVICE: postgresql
+
+  creds:longhorn:
+    desc: Update Longhorn backup credentials
+    cmds:
+      - task: creds:update
+        vars:
+          SERVICE: longhorn
+
+  creds:rotate:
+    desc: Rotate credentials for a service (apply Terraform + update 1Password)
+    deps: [aws:auth]
+    env:
+      AWS_ACCESS_KEY_ID:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+      AWS_SECRET_ACCESS_KEY:
+        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+    cmds:
+      - echo "Rotating credentials for {{.SERVICE}}..."
+      - task: plan
+      - task: apply
+      - task: creds:update
+        vars:
+          SERVICE: '{{.SERVICE}}'
+      - echo "✓ Credentials rotated and updated in 1Password"
+    requires:
+      vars: [SERVICE]
+
+  creds:rotate:postgresql:
+    desc: Rotate PostgreSQL backup credentials (full cycle)
+    cmds:
+      - task: creds:rotate
+        vars:
+          SERVICE: postgresql
+
+  creds:rotate:longhorn:
+    desc: Rotate Longhorn backup credentials (full cycle)
+    cmds:
+      - task: creds:rotate
+        vars:
+          SERVICE: longhorn
+
+  creds:generate:
+    desc: Generate configuration for a new service
+    cmds:
+      - python3 scripts/generate-service-config.py --interactive
+    preconditions:
+      - sh: test -f scripts/generate-service-config.py
+        msg: "Service configuration generator not found"
+
+  creds:show:
+    desc: Show configuration for a specific service
+    cmds:
+      - python3 scripts/generate-service-config.py --service {{.SERVICE}}
+    requires:
+      vars: [SERVICE]
+
+  creds:verify:
+    desc: Verify credentials are stored correctly in 1Password
+    cmds:
+      - |
+        echo "Verifying {{.SERVICE}} credentials in 1Password..."
+        if python3 scripts/update-credentials.py {{.SERVICE}} --dry-run 2>/dev/null; then
+          echo "✓ Credentials verified successfully"
+        else
+          echo "✗ Credential verification failed"
+          echo "Run 'task creds:update SERVICE={{.SERVICE}}' to update"
+        fi
+    requires:
+      vars: [SERVICE]
+
   # State management
   state:list:
     desc: List resources in Terraform state
