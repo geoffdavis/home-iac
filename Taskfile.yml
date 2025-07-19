@@ -109,6 +109,51 @@ tasks:
     cmds:
       - tofu validate
 
+  lint:
+    desc: Run all linters and code quality checks
+    cmds:
+      - echo "Running Python linting..."
+      - mise exec python@3.12 -- python -m ruff check scripts/
+      - echo "✓ Python linting passed"
+      - echo "Running Python formatting check..."
+      - mise exec python@3.12 -- python -m black --check scripts/
+      - echo "✓ Python formatting check passed"
+      - echo "Running Terraform linting..."
+      - mise exec -- tflint --chdir=environments/dev/
+      - echo "✓ Terraform linting passed"
+      - echo "Running shell script linting..."
+      - mise exec -- shellcheck scripts/*.sh || echo "⚠ Shell script warnings found (see output above)"
+      - echo "✓ All linting checks completed"
+
+  lint:fix:
+    desc: Auto-fix linting issues where possible
+    cmds:
+      - echo "Auto-fixing Python issues..."
+      - mise exec python@3.12 -- python -m ruff check scripts/ --fix
+      - mise exec python@3.12 -- python -m black scripts/
+      - echo "✓ Python auto-fixes applied"
+      - echo "Formatting Terraform files..."
+      - tofu fmt -recursive .
+      - echo "✓ Terraform formatting applied"
+      - echo "Run 'task lint' to verify all issues are resolved"
+
+  validate:fix:
+    desc: Validate and auto-fix issues where possible
+    cmds:
+      - task: lint:fix
+      - task: validate
+      - echo "✓ Validation with auto-fixes completed"
+
+  hooks:setup:
+    desc: Set up git hooks for pre-commit linting
+    cmds:
+      - git config core.hooksPath .githooks
+      - echo "✓ Git hooks configured to use .githooks directory"
+      - echo "Pre-commit hook will now run linting on changed files"
+    preconditions:
+      - sh: test -f .githooks/pre-commit
+        msg: "Pre-commit hook not found. File should exist at .githooks/pre-commit"
+
   # AWS credential management
   aws:auth:
     desc: Set AWS credentials from 1Password
@@ -422,8 +467,9 @@ tasks:
 
   # CI/CD tasks
   ci:
-    desc: Run all CI checks (format, validate, plan)
+    desc: Run all CI checks (lint, format, validate, plan)
     cmds:
+      - task: lint
       - task: fmt
       - task: validate
       - task: plan
@@ -431,6 +477,7 @@ tasks:
   pre-commit:
     desc: Run pre-commit checks
     cmds:
+      - task: lint
       - task: fmt
       - task: validate
       - echo "✓ Pre-commit checks passed"
