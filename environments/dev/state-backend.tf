@@ -3,20 +3,20 @@
 
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "opentofu-state-home-iac-${data.aws_caller_identity.current.account_id}"
-  
+
   tags = merge(
     local.common_tags,
     {
-      Name        = "OpenTofu State Storage"
-      Purpose     = "terraform-state"
-      Critical    = "true"
+      Name     = "OpenTofu State Storage"
+      Purpose  = "terraform-state"
+      Critical = "true"
     }
   )
 }
 
 resource "aws_s3_bucket_versioning" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
-  
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -24,7 +24,7 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
-  
+
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -35,7 +35,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" 
 
 resource "aws_s3_bucket_public_access_block" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
-  
+
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -71,10 +71,10 @@ data "aws_caller_identity" "current" {}
 output "backend_config" {
   description = "Backend configuration for terraform block"
   value = {
-    bucket         = aws_s3_bucket.terraform_state.id
-    key            = "home-iac/dev/terraform.tfstate"
-    region         = var.aws_region
+    bucket = aws_s3_bucket.terraform_state.id
+    key    = "home-iac/dev/terraform.tfstate"
+    region = var.aws_region
     # dynamodb_table = aws_dynamodb_table.terraform_locks.name
-    encrypt        = true
+    encrypt = true
   }
 }

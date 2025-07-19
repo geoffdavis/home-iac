@@ -6,15 +6,15 @@ variable "bucket_access_configs" {
   type = map(object({
     bucket_name = string
     bucket_arn  = string
-    
+
     # List of IAM roles that should have access
     role_access = list(object({
-      role_name    = string
-      role_arn     = string
-      permissions  = list(string) # e.g., ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-      prefix       = optional(string, "*") # Path prefix for access, defaults to entire bucket
+      role_name   = string
+      role_arn    = string
+      permissions = list(string)          # e.g., ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      prefix      = optional(string, "*") # Path prefix for access, defaults to entire bucket
     }))
-    
+
     # Cross-account access
     cross_account_access = optional(list(object({
       account_id  = string
@@ -34,9 +34,9 @@ variable "common_tags" {
 # Create bucket policies for role access
 resource "aws_s3_bucket_policy" "role_access" {
   for_each = var.bucket_access_configs
-  
+
   bucket = each.value.bucket_name
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(
@@ -50,7 +50,7 @@ resource "aws_s3_bucket_policy" "role_access" {
         Action   = role.permissions
         Resource = role.prefix == "*" ? ["${each.value.bucket_arn}/*", each.value.bucket_arn] : ["${each.value.bucket_arn}/${role.prefix}/*"]
       }],
-      
+
       # Cross-account access statements
       [for account in each.value.cross_account_access : {
         Sid    = "AllowCrossAccount${account.account_id}"
@@ -86,10 +86,10 @@ resource "aws_iam_policy" "bucket_access" {
       ]
     ]) : config.key => config
   }
-  
+
   name        = "s3-access-${each.value.bucket_name}-${each.value.role_name}"
   description = "S3 access policy for ${each.value.role_name} to ${each.value.bucket_name}"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -99,13 +99,13 @@ resource "aws_iam_policy" "bucket_access" {
         Resource = each.value.prefix == "*" ? [
           "${each.value.bucket_arn}/*",
           each.value.bucket_arn
-        ] : [
+          ] : [
           "${each.value.bucket_arn}/${each.value.prefix}/*"
         ]
       }
     ]
   })
-  
+
   tags = merge(
     var.common_tags,
     {
@@ -122,14 +122,14 @@ resource "aws_iam_role_policy_attachment" "bucket_access" {
     for idx, config in flatten([
       for bucket_key, bucket in var.bucket_access_configs : [
         for role in bucket.role_access : {
-          key         = "${bucket_key}-${role.role_name}"
-          role_name   = role.role_name
-          policy_arn  = aws_iam_policy.bucket_access["${bucket_key}-${role.role_name}"].arn
+          key        = "${bucket_key}-${role.role_name}"
+          role_name  = role.role_name
+          policy_arn = aws_iam_policy.bucket_access["${bucket_key}-${role.role_name}"].arn
         }
       ]
     ]) : config.key => config
   }
-  
+
   role       = each.value.role_name
   policy_arn = each.value.policy_arn
 }

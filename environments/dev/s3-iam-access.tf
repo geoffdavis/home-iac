@@ -5,7 +5,7 @@
 resource "aws_iam_user" "longhorn_backup" {
   name = "longhorn-backup-user"
   path = "/system/"
-  
+
   tags = merge(
     local.common_tags,
     {
@@ -26,7 +26,7 @@ resource "aws_iam_policy" "longhorn_backup_s3_access" {
   name        = "longhorn-backup-s3-access"
   path        = "/"
   description = "IAM policy for Longhorn to access S3 backup bucket"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -53,7 +53,7 @@ resource "aws_iam_policy" "longhorn_backup_s3_access" {
       }
     ]
   })
-  
+
   tags = merge(
     local.common_tags,
     {
@@ -73,7 +73,7 @@ resource "aws_iam_user_policy_attachment" "longhorn_backup_s3_access" {
 resource "aws_iam_user" "postgresql_backup" {
   name = "postgresql-backup-user"
   path = "/system/"
-  
+
   tags = merge(
     local.common_tags,
     {
@@ -87,13 +87,13 @@ resource "aws_iam_user" "postgresql_backup" {
 # Create access key for PostgreSQL user
 resource "aws_iam_access_key" "postgresql_backup" {
   user = aws_iam_user.postgresql_backup.name
-  
+
   # Force regeneration of credentials by updating this timestamp
   # Update this value whenever credentials need to be rotated
   lifecycle {
     create_before_destroy = true
   }
-  
+
   # Keepers to force regeneration when needed
   # Change the rotation_trigger value to force new credentials
   depends_on = [time_rotating.postgresql_backup_rotation]
@@ -104,7 +104,7 @@ resource "time_rotating" "postgresql_backup_rotation" {
   # Rotate credentials immediately by setting a past date
   # This forces regeneration on the next apply
   rotation_rfc3339 = "2025-07-19T16:25:00Z"
-  
+
   # Optional: Set up automatic rotation (uncomment if desired)
   # rotation_days = 90
 }
@@ -114,7 +114,7 @@ resource "aws_iam_policy" "postgresql_backup_s3_access" {
   name        = "postgresql-backup-s3-access"
   path        = "/"
   description = "IAM policy for PostgreSQL to access S3 backup bucket"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -141,7 +141,7 @@ resource "aws_iam_policy" "postgresql_backup_s3_access" {
       }
     ]
   })
-  
+
   tags = merge(
     local.common_tags,
     {
@@ -217,7 +217,7 @@ output "longhorn_backup_bucket_region" {
 # Instructions for Longhorn configuration
 output "longhorn_configuration_instructions" {
   description = "Instructions for configuring Longhorn with S3 backup"
-  value = <<-EOT
+  value       = <<-EOT
     To configure Longhorn with S3 backup:
     
     1. Get the credentials:
@@ -264,7 +264,7 @@ output "postgresql_backup_bucket_region" {
 # Instructions for PostgreSQL configuration
 output "postgresql_configuration_instructions" {
   description = "Instructions for configuring PostgreSQL with S3 backup"
-  value = <<-EOT
+  value       = <<-EOT
     To configure PostgreSQL with S3 backup:
     
     1. Get the credentials:

@@ -126,7 +126,7 @@ tasks:
       - echo "✓ All linting checks completed"
 
   lint:fix:
-    desc: Auto-fix linting issues where possible
+    desc: Auto-fix linting issues and validate configuration
     cmds:
       - echo "Auto-fixing Python issues..."
       - mise exec python@3.12 -- python -m ruff check scripts/ --fix
@@ -135,14 +135,8 @@ tasks:
       - echo "Formatting Terraform files..."
       - tofu fmt -recursive .
       - echo "✓ Terraform formatting applied"
-      - echo "Run 'task lint' to verify all issues are resolved"
-
-  validate:fix:
-    desc: Validate and auto-fix issues where possible
-    cmds:
-      - task: lint:fix
       - task: validate
-      - echo "✓ Validation with auto-fixes completed"
+      - echo "✓ Auto-fixes and validation completed"
 
   hooks:setup:
     desc: Set up git hooks for pre-commit linting
