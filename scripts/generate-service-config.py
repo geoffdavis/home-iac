@@ -22,7 +22,7 @@ def print_colored(message: str, color: str = Colors.NC) -> None:
 
 def generate_terraform_template(service_name: str, config: CredentialConfig) -> str:
     """Generate Terraform configuration template"""
-    return f'''
+    return f"""
 # IAM user for {config.service_name}
 resource "aws_iam_user" "{service_name}_backup" {{
   name = "{service_name}-backup-user"
@@ -127,12 +127,12 @@ output "{service_name}_backup_bucket_region" {{
   description = "AWS region for {service_name} backup bucket"
   value       = var.aws_region
 }}
-'''
+"""
 
 
 def generate_s3_bucket_config(service_name: str, config: CredentialConfig) -> str:
     """Generate S3 bucket configuration"""
-    return f'''
+    return f"""
     # Add this to your s3-buckets.tf file:
     
     {config.s3_bucket_name} = {{
@@ -151,36 +151,40 @@ def generate_s3_bucket_config(service_name: str, config: CredentialConfig) -> st
         }}
       ]
     }}
-'''
+"""
 
 
 def interactive_config_generator() -> CredentialConfig:
     """Interactive configuration generator"""
     print_colored("Service Configuration Generator", Colors.BLUE)
     print("=" * 35)
-    
+
     service_name = input("\nService name (e.g., 'redis', 'mongodb'): ").strip()
     if not service_name:
         raise ValueError("Service name is required")
-    
-    service_display = input(f"Display name (default: '{service_name.title()} S3 Backup'): ").strip()
+
+    service_display = input(
+        f"Display name (default: '{service_name.title()} S3 Backup'): "
+    ).strip()
     if not service_display:
         service_display = f"{service_name.title()} S3 Backup"
-    
-    bucket_name = input(f"S3 bucket name (default: '{service_name}-backup-home-ops'): ").strip()
+
+    bucket_name = input(
+        f"S3 bucket name (default: '{service_name}-backup-home-ops'): "
+    ).strip()
     if not bucket_name:
         bucket_name = f"{service_name}-backup-home-ops"
-    
+
     vault = input("1Password vault (default: 'Automation'): ").strip()
     if not vault:
         vault = "Automation"
-    
+
     tags_input = input(f"Tags (default: 'aws,{service_name},s3,backup'): ").strip()
     if not tags_input:
         tags = ["aws", service_name, "s3", "backup"]
     else:
         tags = [tag.strip() for tag in tags_input.split(",")]
-    
+
     return CredentialConfig(
         service_name=service_display,
         terraform_output_prefix=f"{service_name}_backup",
@@ -189,7 +193,7 @@ def interactive_config_generator() -> CredentialConfig:
         tags=tags,
         description=f"AWS IAM credentials for {service_display} access. Managed by Terraform in home-iac repository.",
         s3_bucket_name=bucket_name,
-        aws_region="us-west-2"
+        aws_region="us-west-2",
     )
 
 
@@ -198,42 +202,46 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate service configuration for credential management"
     )
-    
+
     parser.add_argument(
-        "--interactive", "-i",
+        "--interactive",
+        "-i",
         action="store_true",
-        help="Interactive configuration generator"
+        help="Interactive configuration generator",
     )
-    
-    parser.add_argument(
-        "--service",
-        help="Service name for template generation"
-    )
-    
+
+    parser.add_argument("--service", help="Service name for template generation")
+
     args = parser.parse_args()
-    
+
     try:
         if args.interactive:
             config = interactive_config_generator()
             service_name = config.terraform_output_prefix.replace("_backup", "")
-            
-            print_colored(f"\n✓ Configuration generated for {service_name}", Colors.GREEN)
-            
+
+            print_colored(
+                f"\n✓ Configuration generated for {service_name}", Colors.GREEN
+            )
+
             # Add to service configs (in memory)
             add_service_config(service_name, config)
-            
+
             print_colored("\nGenerated Terraform configuration:", Colors.YELLOW)
             print(generate_terraform_template(service_name, config))
-            
+
             print_colored("\nGenerated S3 bucket configuration:", Colors.YELLOW)
             print(generate_s3_bucket_config(service_name, config))
-            
+
             print_colored("\nNext steps:", Colors.BLUE)
-            print("1. Add the Terraform configuration to environments/dev/s3-iam-access.tf")
-            print("2. Add the S3 bucket configuration to environments/dev/s3-buckets.tf")
-            print(f"3. Add the service config to scripts/lib/service_configs.py")
+            print(
+                "1. Add the Terraform configuration to environments/dev/s3-iam-access.tf"
+            )
+            print(
+                "2. Add the S3 bucket configuration to environments/dev/s3-buckets.tf"
+            )
+            print("3. Add the service config to scripts/lib/service_configs.py")
             print(f"4. Run: python3 scripts/update-credentials.py {service_name}")
-            
+
         elif args.service:
             if args.service in SERVICE_CONFIGS:
                 config = SERVICE_CONFIGS[args.service]
@@ -250,9 +258,9 @@ def main():
         else:
             parser.print_help()
             return 1
-            
+
         return 0
-        
+
     except KeyboardInterrupt:
         print_colored("\n✗ Operation cancelled by user", Colors.RED)
         return 1

@@ -4,7 +4,7 @@ Service Configuration Definitions
 Defines credential configurations for different services
 """
 
-from credential_manager import CredentialConfig
+from .credential_manager import CredentialConfig
 
 
 # Service configurations
@@ -17,9 +17,8 @@ SERVICE_CONFIGS = {
         tags=["aws", "postgresql", "s3", "backup", "database"],
         description="AWS IAM credentials for PostgreSQL S3 backup access. Managed by Terraform in home-iac repository.",
         s3_bucket_name="postgresql-backup-home-ops",
-        aws_region="us-west-2"
+        aws_region="us-west-2",
     ),
-    
     "longhorn": CredentialConfig(
         service_name="Longhorn S3 Backup",
         terraform_output_prefix="longhorn_backup",
@@ -28,9 +27,8 @@ SERVICE_CONFIGS = {
         tags=["aws", "longhorn", "s3", "backup", "kubernetes"],
         description="AWS IAM credentials for Longhorn S3 backup access. Managed by Terraform in home-iac repository.",
         s3_bucket_name="longhorn-backups-home-ops",
-        aws_region="us-west-2"
+        aws_region="us-west-2",
     ),
-    
     # Template for adding new services
     "template": CredentialConfig(
         service_name="Service Name",
@@ -40,8 +38,8 @@ SERVICE_CONFIGS = {
         tags=["aws", "service", "s3", "backup"],
         description="AWS IAM credentials for Service S3 backup access. Managed by Terraform in home-iac repository.",
         s3_bucket_name="service-backup-home-ops",
-        aws_region="us-west-2"
-    )
+        aws_region="us-west-2",
+    ),
 }
 
 
@@ -50,7 +48,7 @@ def get_service_config(service_name: str) -> CredentialConfig:
     if service_name not in SERVICE_CONFIGS:
         available = ", ".join(SERVICE_CONFIGS.keys())
         raise ValueError(f"Unknown service '{service_name}'. Available: {available}")
-    
+
     return SERVICE_CONFIGS[service_name]
 
 

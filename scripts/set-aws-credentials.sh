@@ -7,10 +7,10 @@ safe_exit() {
     local exit_code=$1
     if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
         # Script is being sourced, use return
-        return $exit_code
+        return "$exit_code"
     else
         # Script is being executed, use exit
-        exit $exit_code
+        exit "$exit_code"
     fi
 }
 
@@ -85,8 +85,10 @@ fi
 
 # Export AWS credentials
 echo "Setting AWS credentials from 1Password..."
-export AWS_ACCESS_KEY_ID=$(op read "$ACCESS_KEY_PATH" 2>/dev/null)
-export AWS_SECRET_ACCESS_KEY=$(op read "$SECRET_KEY_PATH" 2>/dev/null)
+AWS_ACCESS_KEY_ID=$(op read "$ACCESS_KEY_PATH" 2>/dev/null)
+AWS_SECRET_ACCESS_KEY=$(op read "$SECRET_KEY_PATH" 2>/dev/null)
+export AWS_ACCESS_KEY_ID
+export AWS_SECRET_ACCESS_KEY
 
 if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
     echo "✓ AWS credentials set successfully"
