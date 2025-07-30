@@ -29,6 +29,16 @@ SERVICE_CONFIGS = {
         s3_bucket_name="longhorn-backups-home-ops",
         aws_region="us-west-2",
     ),
+    "unifi": CredentialConfig(
+        service_name="UniFi Controller API",
+        terraform_output_prefix="unifi_api",  # Not used for UniFi (no Terraform outputs)
+        onepassword_item_title="Home-ops Unifi API",
+        onepassword_vault="Automation",
+        tags=["unifi", "api", "network", "controller"],
+        description="UniFi Controller API credentials for network management. Used by Terraform UniFi provider.",
+        s3_bucket_name=None,  # Not applicable for UniFi
+        aws_region="us-west-2",  # Not applicable but required by dataclass
+    ),
     # Template for adding new services
     "template": CredentialConfig(
         service_name="Service Name",
