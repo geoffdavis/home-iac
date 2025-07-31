@@ -157,6 +157,94 @@ resource "aws_iam_user_policy_attachment" "postgresql_backup_s3_access" {
   policy_arn = aws_iam_policy.postgresql_backup_s3_access.arn
 }
 
+# Create IAM user for Home Assistant PostgreSQL backups
+resource "aws_iam_user" "home_assistant_postgres_backup" {
+  name = "home-assistant-postgres-backup-user"
+  path = "/system/"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name        = "home-assistant-postgres-backup-user"
+      Application = "home-assistant"
+      Purpose     = "postgres-backup-access"
+    }
+  )
+}
+
+# Create access key for Home Assistant PostgreSQL user
+resource "aws_iam_access_key" "home_assistant_postgres_backup" {
+  user = aws_iam_user.home_assistant_postgres_backup.name
+
+  # Force regeneration of credentials by updating this timestamp
+  # Update this value whenever credentials need to be rotated
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  # Keepers to force regeneration when needed
+  # Change the rotation_trigger value to force new credentials
+  depends_on = [time_rotating.home_assistant_postgres_backup_rotation]
+}
+
+# Time-based rotation trigger for Home Assistant PostgreSQL backup credentials
+resource "time_rotating" "home_assistant_postgres_backup_rotation" {
+  # Rotate credentials immediately by setting a past date
+  # This forces regeneration on the next apply
+  rotation_rfc3339 = "2025-07-30T17:08:00Z"
+
+  # Optional: Set up automatic rotation (uncomment if desired)
+  # rotation_days = 90
+}
+
+# IAM policy for Home Assistant PostgreSQL S3 backup access
+resource "aws_iam_policy" "home_assistant_postgres_backup_s3_access" {
+  name        = "home-assistant-postgres-backup-s3-access"
+  path        = "/"
+  description = "IAM policy for Home Assistant PostgreSQL to access S3 backup bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ListBucketAccess"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = module.s3_buckets.bucket_arns["home_assistant_postgres_backup_home_ops"]
+      },
+      {
+        Sid    = "ObjectAccess"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:GetObjectVersion",
+          "s3:DeleteObjectVersion"
+        ]
+        Resource = "${module.s3_buckets.bucket_arns["home_assistant_postgres_backup_home_ops"]}/*"
+      }
+    ]
+  })
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name        = "home-assistant-postgres-backup-s3-access"
+      Application = "home-assistant"
+    }
+  )
+}
+
+# Attach the policy to the Home Assistant PostgreSQL user
+resource "aws_iam_user_policy_attachment" "home_assistant_postgres_backup_s3_access" {
+  user       = aws_iam_user.home_assistant_postgres_backup.name
+  policy_arn = aws_iam_policy.home_assistant_postgres_backup_s3_access.arn
+}
+
 # Alternative: Configure using the s3-iam-access module
 # Uncomment this section if you prefer to use an IAM role instead of a user
 
@@ -284,6 +372,78 @@ output "postgresql_configuration_instructions" {
        export AWS_REGION=${var.aws_region}
     
     4. The bucket has lifecycle rules configured:
+       - Backups expire after 90 days
+       - Non-current versions expire after 30 days
+  EOT
+}
+# Outputs for Home Assistant PostgreSQL configuration
+output "home_assistant_postgres_backup_access_key_id" {
+  description = "Access key ID for Home Assistant PostgreSQL backup user"
+  value       = aws_iam_access_key.home_assistant_postgres_backup.id
+  sensitive   = true
+}
+
+output "home_assistant_postgres_backup_secret_access_key" {
+  description = "Secret access key for Home Assistant PostgreSQL backup user"
+  value       = aws_iam_access_key.home_assistant_postgres_backup.secret
+  sensitive   = true
+}
+
+output "home_assistant_postgres_backup_bucket_name" {
+  description = "S3 bucket name for Home Assistant PostgreSQL backups"
+  value       = module.s3_buckets.bucket_ids["home_assistant_postgres_backup_home_ops"]
+}
+
+output "home_assistant_postgres_backup_bucket_region" {
+  description = "AWS region for Home Assistant PostgreSQL backup bucket"
+  value       = var.aws_region
+}
+
+# Instructions for Home Assistant PostgreSQL configuration
+output "home_assistant_postgres_configuration_instructions" {
+  description = "Instructions for configuring Home Assistant PostgreSQL with S3 backup"
+  value       = <<-EOT
+    To configure Home Assistant PostgreSQL with S3 backup:
+    
+    1. Get the credentials:
+       - Access Key ID: terraform output -raw home_assistant_postgres_backup_access_key_id
+       - Secret Access Key: terraform output -raw home_assistant_postgres_backup_secret_access_key
+    
+    2. Configure your Cloud-Native PostgreSQL instance with:
+       - Bucket: ${module.s3_buckets.bucket_ids["home_assistant_postgres_backup_home_ops"]}
+       - Region: ${var.aws_region}
+       - AWS Access Key ID: (from step 1)
+       - AWS Secret Access Key: (from step 1)
+    
+    3. Create Kubernetes secret for the Cloud-Native PostgreSQL operator:
+       kubectl create secret generic home-assistant-postgres-backup-secret \
+         --from-literal=ACCESS_KEY_ID=$(terraform output -raw home_assistant_postgres_backup_access_key_id) \
+         --from-literal=SECRET_ACCESS_KEY=$(terraform output -raw home_assistant_postgres_backup_secret_access_key) \
+         --from-literal=AWS_REGION=${var.aws_region} \
+         -n home-assistant
+
+    4. Example Cloud-Native PostgreSQL backup configuration:
+       apiVersion: postgresql.cnpg.io/v1
+       kind: Backup
+       metadata:
+         name: home-assistant-postgres-backup
+         namespace: home-assistant
+       spec:
+         cluster:
+           name: home-assistant-postgres
+         target: s3://${module.s3_buckets.bucket_ids["home_assistant_postgres_backup_home_ops"]}/backups
+         s3Credentials:
+           accessKeyId:
+             name: home-assistant-postgres-backup-secret
+             key: ACCESS_KEY_ID
+           secretAccessKey:
+             name: home-assistant-postgres-backup-secret
+             key: SECRET_ACCESS_KEY
+           region:
+             name: home-assistant-postgres-backup-secret
+             key: AWS_REGION
+    
+    5. The bucket has lifecycle rules configured:
        - Backups expire after 90 days
        - Non-current versions expire after 30 days
   EOT

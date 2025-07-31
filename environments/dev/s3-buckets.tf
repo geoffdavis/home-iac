@@ -82,6 +82,39 @@ module "s3_buckets" {
         purpose     = "database-backups"
       }
     }
+
+    # Home Assistant PostgreSQL backups bucket
+    home_assistant_postgres_backup_home_ops = {
+      bucket_name = "home-assistant-postgres-backup-home-ops"
+      acl         = "private"
+
+      server_side_encryption = {
+        algorithm          = "AES256"
+        bucket_key_enabled = true
+      }
+
+      public_access_block = {
+        block_public_acls       = true
+        block_public_policy     = true
+        ignore_public_acls      = true
+        restrict_public_buckets = true
+      }
+
+      lifecycle_rules = [
+        {
+          id                         = "home_assistant_postgres_backup_retention"
+          enabled                    = true
+          prefix                     = ""
+          expiration_days            = 90
+          noncurrent_expiration_days = 30
+        }
+      ]
+
+      tags = {
+        application = "home-assistant"
+        purpose     = "postgres-database-backups"
+      }
+    }
   }
 
   common_tags = local.common_tags

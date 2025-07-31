@@ -62,6 +62,23 @@ tasks:
         sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
         sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+      # TEMPORARILY DISABLED - UniFi and WiFi credentials
+      # TF_VAR_unifi_username:
+      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_USERNAME_FIELD}"
+      # TF_VAR_unifi_password:
+      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_PASSWORD_FIELD}"
+      # TF_VAR_main_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${MAIN_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_guest_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${GUEST_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_iot_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${IOT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_management_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${MGMT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_performance_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${PERF_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_legacy_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${LEGACY_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
     cmds:
       - tofu plan -out=tfplan
     sources:
@@ -77,6 +94,23 @@ tasks:
         sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
         sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+      # TEMPORARILY DISABLED - UniFi and WiFi credentials
+      # TF_VAR_unifi_username:
+      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_USERNAME_FIELD}"
+      # TF_VAR_unifi_password:
+      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_PASSWORD_FIELD}"
+      # TF_VAR_main_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${MAIN_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_guest_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${GUEST_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_iot_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${IOT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_management_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${MGMT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_performance_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${PERF_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+      # TF_VAR_legacy_wifi_passphrase:
+      #   sh: source .env && op read "op://${WIFI_VAULT}/${LEGACY_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
     cmds:
       - tofu apply tfplan
     preconditions:
@@ -293,11 +327,13 @@ tasks:
   # Credential management
   creds:list:
     desc: List all available credential services
+    dir: .
     cmds:
       - python3 scripts/update-credentials.py --list
 
   creds:update:
     desc: Update credentials for a specific service
+    dir: .
     cmds:
       - python3 scripts/update-credentials.py {{.SERVICE}}
     requires:
@@ -319,6 +355,13 @@ tasks:
       - task: creds:update
         vars:
           SERVICE: longhorn
+
+  creds:home-assistant-postgres:
+    desc: Update Home Assistant PostgreSQL backup credentials
+    cmds:
+      - task: creds:update
+        vars:
+          SERVICE: home-assistant-postgres
 
   creds:rotate:
     desc: Rotate credentials for a service (apply Terraform + update 1Password)
@@ -353,8 +396,16 @@ tasks:
         vars:
           SERVICE: longhorn
 
+  creds:rotate:home-assistant-postgres:
+    desc: Rotate Home Assistant PostgreSQL backup credentials (full cycle)
+    cmds:
+      - task: creds:rotate
+        vars:
+          SERVICE: home-assistant-postgres
+
   creds:generate:
     desc: Generate configuration for a new service
+    dir: .
     cmds:
       - python3 scripts/generate-service-config.py --interactive
     preconditions:
@@ -363,6 +414,7 @@ tasks:
 
   creds:show:
     desc: Show configuration for a specific service
+    dir: .
     cmds:
       - python3 scripts/generate-service-config.py --service {{.SERVICE}}
     requires:

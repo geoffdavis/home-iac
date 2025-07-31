@@ -4,7 +4,7 @@ Service Configuration Definitions
 Defines credential configurations for different services
 """
 
-from .credential_manager import CredentialConfig
+from credential_manager import CredentialConfig
 
 
 # Service configurations
@@ -27,6 +27,16 @@ SERVICE_CONFIGS = {
         tags=["aws", "longhorn", "s3", "backup", "kubernetes"],
         description="AWS IAM credentials for Longhorn S3 backup access. Managed by Terraform in home-iac repository.",
         s3_bucket_name="longhorn-backups-home-ops",
+        aws_region="us-west-2",
+    ),
+    "home-assistant-postgres": CredentialConfig(
+        service_name="Home Assistant PostgreSQL S3 Backup",
+        terraform_output_prefix="home_assistant_postgres_backup",
+        onepassword_item_title="AWS Access Key - home-assistant-postgres-s3-backup - home-ops",
+        onepassword_vault="Automation",
+        tags=["aws", "home-assistant", "postgresql", "s3", "backup", "database"],
+        description="AWS IAM credentials for Home Assistant PostgreSQL S3 backup access. Managed by Terraform in home-iac repository.",
+        s3_bucket_name="home-assistant-postgres-backup-home-ops",
         aws_region="us-west-2",
     ),
     "unifi": CredentialConfig(
