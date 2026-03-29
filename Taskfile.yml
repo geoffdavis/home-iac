@@ -4,8 +4,6 @@ vars:
   ENVIRONMENT: '{{.ENVIRONMENT | default "home"}}'
   TF_DIR: 'environments/{{.ENVIRONMENT}}'
 
-dotenv: ['.env']
-
 tasks:
   default:
     desc: Show available tasks
@@ -16,44 +14,29 @@ tasks:
     desc: Initialize OpenTofu
     dir: '{{.TF_DIR}}'
     cmds:
-      - tofu init
+      - op run --env-file ../../.env -- tofu init
 
   plan:
     desc: Plan changes
     dir: '{{.TF_DIR}}'
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     cmds:
-      - tofu plan -out=tfplan
+      - op run --env-file ../../.env -- tofu plan -out=tfplan
 
   apply:
     desc: Apply planned changes
     dir: '{{.TF_DIR}}'
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     cmds:
-      - tofu apply tfplan
+      - op run --env-file ../../.env -- tofu apply tfplan
     preconditions:
-      - sh: test -f {{.TF_DIR}}/tfplan
+      - sh: test -f tfplan
         msg: "No plan file found. Run 'task plan' first."
 
   destroy:
     desc: Destroy all managed infrastructure
     dir: '{{.TF_DIR}}'
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     prompt: This will destroy all infrastructure. Are you sure?
     cmds:
-      - tofu destroy
+      - op run --env-file ../../.env -- tofu destroy
 
   fmt:
     desc: Format all Terraform files
@@ -69,13 +52,8 @@ tasks:
   state:list:
     desc: List resources in state
     dir: '{{.TF_DIR}}'
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
     cmds:
-      - tofu state list
+      - op run --env-file ../../.env -- tofu state list
 
   clean:
     desc: Clean up generated files
