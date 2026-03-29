@@ -5,3 +5,16 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-merge-conflict
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.99.1
+    hooks:
+      - id: terraform_fmt
+        args:
+          - --args=-diff
+          - --hook-config=--tf-path=tofu
+      - id: terraform_validate
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+          - --hook-config=--tf-path=tofu
+          - --tf-init-args=-backend=false
