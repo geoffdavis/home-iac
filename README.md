@@ -1,300 +1,50 @@
-# OpenTofu Infrastructure as Code for AWS S3 Management
+# home-iac
 
-This repository manages AWS S3 infrastructure using OpenTofu (Terraform-compatible) with 1Password integration for secure credential management.
+OpenTofu (Terraform) configuration for home lab AWS infrastructure.
 
-## 🚀 Quick Start
+## What it manages
 
-```bash
-# 1. Set up environment
-cp .env.example .env
-# Edit .env with your 1Password account
+- **S3 buckets** for backups (Longhorn, Home Assistant, PostgreSQL)
+- **IAM users and policies** for backup service accounts
+- **State backend** (S3 bucket + DynamoDB lock table)
 
-# 2. Source environment and run setup
-source .env
-./scripts/init-setup.sh
+## Prerequisites
 
-# 3. Run tasks with the Taskfile
-task setup          # Complete setup
-task plan           # Plan changes
-task apply          # Apply changes
-```
+- [OpenTofu](https://opentofu.org/) >= 1.5.0
+- [1Password CLI](https://developer.1password.com/docs/cli/) (`op`)
+- [Task](https://taskfile.dev/) runner
+- AWS credentials stored in 1Password
 
-## 📋 Prerequisites
-
-- **mise** (recommended) or manually installed tools:
-  - **OpenTofu** (v1.5.0+)
-  - **AWS CLI** configured
-  - **1Password CLI** installed and configured
-  - **jq** for JSON processing
-- AWS credentials stored in 1Password (configure location in .env)
-
-### Automated Tool Installation
-
-This project uses [mise](https://mise.jdx.dev) for managing tool versions:
+## Usage
 
 ```bash
-# Install mise and all required tools
-./scripts/setup-mise.sh
+cp .env.example .env   # edit with your 1Password item references
+task init              # initialize OpenTofu
+task plan              # preview changes
+task apply             # apply changes
 ```
 
-See [docs/dependency-management.md](docs/dependency-management.md) for details.
-
-## 🏗️ Architecture
-
-### Repository Structure
+## Structure
 
 ```
-.
-├── environments/          # Environment-specific configurations
-│   └── dev/              # Development environment
-│       ├── main.tf       # Provider configuration
-│       ├── backend.tf    # S3 + DynamoDB state backend
-│       ├── s3-buckets.tf # S3 bucket configurations
-│       └── state-backend.tf # State storage infrastructure
-├── modules/              # Reusable OpenTofu modules
-│   ├── s3-buckets/      # S3 bucket management
-│   └── s3-iam-access/   # IAM access policies
-├── scripts/             # Automation scripts
-│   ├── init-setup.sh    # Initial setup script
-│   ├── discover-s3-buckets.sh # S3 discovery
-│   └── import-with-credentials.sh # Import helper
-└── docs/                # Additional documentation
+environments/
+  home/                # home lab environment
+    backend.tf         # S3 remote state backend
+    main.tf            # AWS provider + common tags
+    versions.tf        # provider version constraints
+    state-backend.tf   # state bucket + DynamoDB table resources
+    s3-buckets.tf      # workload S3 buckets
+    s3-iam-access.tf   # IAM users + policies for backup access
+    variables.tf       # input variables
+modules/
+  s3-buckets/          # reusable S3 bucket module
 ```
 
-### State Management
+## State backend
 
-- **State Storage**: S3 bucket `opentofu-state-home-iac-078129923125`
-- **State Locking**: DynamoDB table `opentofu-state-locks-home-iac`
-- **Encryption**: AES256 at rest
-- **Versioning**: Enabled for state history
+State is stored in S3 (`opentofu-state-home-iac-<account-id>`) with DynamoDB locking.
+If the state bucket is destroyed, bootstrap with local state first:
 
-## 🔧 Configuration
-
-### 1Password Setup
-
-Your AWS credentials must be stored in 1Password. Configure the location in `.env`:
-```bash
-OP_AWS_VAULT=Private
-OP_AWS_ITEM="AWS Access Key - S3 - Personal"
-OP_AWS_ACCESS_KEY_FIELD="access key id"
-OP_AWS_SECRET_KEY_FIELD="secret access key"
-OP_AWS_SECTION="Section_name"  # If using sections
-```
-
-### Environment Variables
-
-Copy and update `.env` file:
-```bash
-cp .env.example .env
-# Edit .env with your 1Password configuration
-```
-
-### AWS IAM Requirements
-
-Your IAM user needs:
-- **S3 Permissions**: Full access to S3 buckets
-- **DynamoDB Permissions**: For state locking (see `docs/complete-dynamodb-permissions.json`)
-
-## 📚 Module Documentation
-
-### S3 Buckets Module
-
-Manages S3 buckets with support for:
-- Versioning and encryption
-- Lifecycle rules
-- Public access blocks
-- Bucket policies
-- Tags
-
-Example usage:
-```hcl
-module "s3_buckets" {
-  source = "../../modules/s3-buckets"
-  
-  buckets = {
-    my_bucket = {
-      bucket_name = "my-unique-bucket-name"
-      versioning  = true
-      
-      server_side_encryption = {
-        algorithm          = "AES256"
-        bucket_key_enabled = true
-      }
-      
-      tags = {
-        Purpose = "Data Storage"
-      }
-    }
-  }
-}
-```
-
-### S3 IAM Access Module
-
-Manages IAM access to S3 buckets:
-```hcl
-module "s3_iam_access" {
-  source = "../../modules/s3-iam-access"
-  
-  bucket_access_configs = {
-    my_bucket = {
-      bucket_name = "my-unique-bucket-name"
-      bucket_arn  = module.s3_buckets.bucket_arns["my_bucket"]
-      
-      role_access = [{
-        role_name   = "MyApplicationRole"
-        role_arn    = "arn:aws:iam::123456789012:role/MyApplicationRole"
-        permissions = ["s3:GetObject", "s3:PutObject"]
-      }]
-    }
-  }
-}
-```
-
-## 🔄 Common Operations
-
-### Import Existing S3 Buckets
-
-```bash
-# Discover existing buckets
-./scripts/discover-s3-buckets.sh
-
-# Review discovered configuration
-cat discovered-buckets.json
-
-# Import buckets
-cd environments/dev
-../../scripts/import-with-credentials.sh
-```
-
-### Using Task Commands
-
-This project includes a comprehensive Taskfile for common operations:
-
-```bash
-# Show all available tasks
-task --list-all
-
-# Common workflows
-task setup          # Initial setup
-task plan           # Plan infrastructure changes
-task apply          # Apply changes
-task fmt            # Format code
-task validate       # Validate configuration
-
-# AWS operations
-task aws:whoami     # Show current AWS identity
-task s3:discover    # Discover S3 buckets
-
-# Dependency management
-task deps:check     # Check for updates
-task deps:update    # Update dependencies
-```
-
-AWS credentials are automatically loaded from 1Password when needed.
-
-### Add New S3 Bucket
-
-1. Add configuration to `environments/dev/s3-buckets.tf`
-2. Run `tofu plan` to preview
-3. Run `tofu apply` to create
-
-### Enable State Locking
-
-If you have DynamoDB permissions:
-```bash
-./scripts/setup-dynamodb-locking.sh
-```
-
-## 🛠️ Troubleshooting
-
-### 1Password Authentication Issues
-
-```bash
-# Ensure you're signed in
-op signin
-
-# Test credential access (using vars from .env)
-source .env
-op item get "${OP_AWS_ITEM}" --vault "${OP_AWS_VAULT}"
-```
-
-### AWS Credentials Not Working
-
-Check the 1Password item structure matches your .env configuration:
-- Verify vault name, item name, and field names in .env
-- Update OP_AWS_SECTION if your item uses sections
-
-### State Lock Errors
-
-If DynamoDB locking fails:
-1. Check IAM permissions (see `docs/complete-dynamodb-permissions.json`)
-2. Verify table exists: `aws dynamodb list-tables --region us-west-2`
-3. Force unlock if needed: `tofu force-unlock <LOCK_ID>`
-
-## 🔐 Security Best Practices
-
-1. **Never commit credentials** - Use 1Password integration
-2. **Use least-privilege IAM policies**
-3. **Enable bucket encryption** for all S3 buckets
-4. **Enable versioning** for critical buckets
-5. **Regular credential rotation**
-6. **Use separate AWS accounts** for different environments
-
-## 🚢 CI/CD Integration
-
-For GitOps workflows:
-
-1. Store AWS credentials in CI/CD secrets
-2. Use PR checks to run `tofu plan`
-3. Apply changes on merge to main
-4. Use workspaces for multiple environments
-
-Example GitHub Actions workflow:
-```yaml
-name: Terraform Plan
-on: [pull_request]
-
-jobs:
-  plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
-      
-      - name: Terraform Plan
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          cd environments/dev
-          terraform init
-          terraform plan
-```
-
-## 🔄 Dependency Management
-
-This project uses:
-- **mise**: Runtime version management for consistent tool versions
-- **Renovate**: Automated dependency updates via pull requests
-
-Dependencies are automatically updated weekly. See [docs/dependency-management.md](docs/dependency-management.md) for details.
-
-## 📖 Additional Resources
-
-- [OpenTofu Documentation](https://opentofu.org/docs/)
-- [AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [1Password CLI Documentation](https://developer.1password.com/docs/cli/)
-- [mise Documentation](https://mise.jdx.dev)
-- [Renovate Documentation](https://docs.renovatebot.com/)
-
-## 🤝 Contributing
-
-1. Create feature branch
-2. Make changes
-3. Run `tofu fmt` and `tofu validate`
-4. Submit PR with plan output
-
----
-
-For detailed setup instructions, see [docs/setup-guide.md](docs/setup-guide.md)
+1. Temporarily switch `backend.tf` to `backend "local" {}`
+2. `tofu init -reconfigure && tofu apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks`
+3. Restore the S3 backend config and `tofu init -migrate-state`

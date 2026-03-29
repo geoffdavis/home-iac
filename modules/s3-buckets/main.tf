@@ -4,7 +4,7 @@ variable "buckets" {
   description = "Map of S3 bucket configurations"
   type = map(object({
     bucket_name = string
-    acl         = optional(string, "private")
+    acl         = optional(string)
     versioning  = optional(bool, false)
     lifecycle_rules = optional(list(object({
       id                         = string

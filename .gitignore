@@ -1,59 +1,22 @@
 # Environment variables
 .env
-.env.local
 
-# Terraform/OpenTofu
+# OpenTofu / Terraform
 *.tfstate
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+tfplan
 crash.log
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-*.tfvars
-terraform.rc
-.terraformrc
 
-# Discovery output
-discovered-buckets.json
-scripts/import-s3-buckets.sh
-
-# OS files
+# OS
 .DS_Store
-Thumbs.db
 
 # IDE
 .idea/
-.vscode/*
-!.vscode/tasks.json
-!.vscode/extensions.json
+.vscode/
 *.swp
-*.swo
 *~
 
-# mise
-.mise/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-.env
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Task runner cache
+# Task runner
 .task/
-
-# Terraform plans
-*.tfplan
-
-# Logs
-*.log

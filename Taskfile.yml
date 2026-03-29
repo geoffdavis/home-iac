@@ -1,11 +1,10 @@
 version: '3'
 
 vars:
-  ENVIRONMENT: '{{.ENVIRONMENT | default "dev"}}'
+  ENVIRONMENT: '{{.ENVIRONMENT | default "home"}}'
   TF_DIR: 'environments/{{.ENVIRONMENT}}'
 
-env:
-  AWS_REGION: '{{.AWS_REGION | default "us-west-2"}}'
+dotenv: ['.env']
 
 tasks:
   default:
@@ -13,104 +12,31 @@ tasks:
     cmds:
       - task --list-all
 
-  # Setup and initialization tasks
-  setup:
-    desc: Complete initial setup (install tools, configure environment)
-    cmds:
-      - task: setup:mise
-      - task: setup:env
-      - task: init
-
-  setup:mise:
-    desc: Install mise and all required tools
-    cmds:
-      - ./scripts/setup-mise.sh
-      - mise install
-    sources:
-      - .mise.toml
-    preconditions:
-      - sh: test -f scripts/setup-mise.sh
-        msg: "setup-mise.sh script not found"
-
-  setup:env:
-    desc: Setup environment variables from example
-    cmds:
-      - cp -n .env.example .env || true
-      - echo "✓ Environment file ready. Please edit .env with your 1Password configuration."
-    sources:
-      - .env.example
-    generates:
-      - .env
-
-  # Terraform/OpenTofu tasks
   init:
-    desc: Initialize OpenTofu with backend configuration
+    desc: Initialize OpenTofu
     dir: '{{.TF_DIR}}'
     cmds:
-      - echo "Initializing OpenTofu in {{.TF_DIR}}..."
       - tofu init
-    sources:
-      - '{{.TF_DIR}}/*.tf'
-      - '{{.TF_DIR}}/.terraform.lock.hcl'
 
   plan:
-    desc: Create an execution plan for OpenTofu changes
+    desc: Plan changes
     dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
     env:
       AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-      # TEMPORARILY DISABLED - UniFi and WiFi credentials
-      # TF_VAR_unifi_username:
-      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_USERNAME_FIELD}"
-      # TF_VAR_unifi_password:
-      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_PASSWORD_FIELD}"
-      # TF_VAR_main_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${MAIN_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_guest_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${GUEST_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_iot_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${IOT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_management_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${MGMT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_performance_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${PERF_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_legacy_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${LEGACY_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     cmds:
       - tofu plan -out=tfplan
-    sources:
-      - '{{.TF_DIR}}/*.tf'
-      - modules/**/*.tf
 
   apply:
-    desc: Apply the OpenTofu changes
+    desc: Apply planned changes
     dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
     env:
       AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-      # TEMPORARILY DISABLED - UniFi and WiFi credentials
-      # TF_VAR_unifi_username:
-      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_USERNAME_FIELD}"
-      # TF_VAR_unifi_password:
-      #   sh: source .env && op read "op://${UNIFI_VAULT}/${UNIFI_ITEM}/${UNIFI_PASSWORD_FIELD}"
-      # TF_VAR_main_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${MAIN_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_guest_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${GUEST_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_iot_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${IOT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_management_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${MGMT_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_performance_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${PERF_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
-      # TF_VAR_legacy_wifi_passphrase:
-      #   sh: source .env && op read "op://${WIFI_VAULT}/${LEGACY_WIFI_ITEM}/${WIFI_PASSWORD_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     cmds:
       - tofu apply tfplan
     preconditions:
@@ -118,24 +44,21 @@ tasks:
         msg: "No plan file found. Run 'task plan' first."
 
   destroy:
-    desc: Destroy all managed infrastructure (use with caution!)
+    desc: Destroy all managed infrastructure
     dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
     env:
       AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECRET_KEY_FIELD}"
     prompt: This will destroy all infrastructure. Are you sure?
     cmds:
-      - tofu destroy -auto-approve
+      - tofu destroy
 
   fmt:
     desc: Format all Terraform files
     cmds:
       - tofu fmt -recursive .
-    sources:
-      - '**/*.tf'
 
   validate:
     desc: Validate Terraform configuration
@@ -143,417 +66,20 @@ tasks:
     cmds:
       - tofu validate
 
-  lint:
-    desc: Run all linters and code quality checks
-    cmds:
-      - echo "Running Python linting..."
-      - mise exec python@3.12 -- python -m ruff check scripts/
-      - echo "✓ Python linting passed"
-      - echo "Running Python formatting check..."
-      - mise exec python@3.12 -- python -m black --check scripts/
-      - echo "✓ Python formatting check passed"
-      - echo "Running Terraform linting..."
-      - mise exec -- tflint --chdir=environments/dev/
-      - echo "✓ Terraform linting passed"
-      - echo "Running shell script linting..."
-      - mise exec -- shellcheck scripts/*.sh || echo "⚠ Shell script warnings found (see output above)"
-      - echo "✓ All linting checks completed"
-
-  lint:fix:
-    desc: Auto-fix linting issues and validate configuration
-    cmds:
-      - echo "Auto-fixing Python issues..."
-      - mise exec python@3.12 -- python -m ruff check scripts/ --fix
-      - mise exec python@3.12 -- python -m black scripts/
-      - echo "✓ Python auto-fixes applied"
-      - echo "Formatting Terraform files..."
-      - tofu fmt -recursive .
-      - echo "✓ Terraform formatting applied"
-      - task: validate
-      - echo "✓ Auto-fixes and validation completed"
-
-  hooks:setup:
-    desc: Set up git hooks for pre-commit linting
-    cmds:
-      - git config core.hooksPath .githooks
-      - echo "✓ Git hooks configured to use .githooks directory"
-      - echo "Pre-commit hook will now run linting on changed files"
-    preconditions:
-      - sh: test -f .githooks/pre-commit
-        msg: "Pre-commit hook not found. File should exist at .githooks/pre-commit"
-
-  # AWS credential management
-  aws:auth:
-    desc: Set AWS credentials from 1Password
-    cmds:
-      - echo "✓ AWS credentials loaded from 1Password"
-    silent: true
-
-  aws:whoami:
-    desc: Show current AWS identity
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    cmds:
-      - aws sts get-caller-identity
-    preconditions:
-      - sh: test -f .env
-        msg: "Environment file not found. Run 'task setup:env' first."
-
-  # S3 bucket management
-  s3:discover:
-    desc: Discover existing S3 buckets and generate import configuration
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    cmds:
-      - ./scripts/discover-s3-buckets.sh
-      - echo "✓ Discovered buckets saved to discovered-buckets.json"
-    generates:
-      - discovered-buckets.json
-
-  s3:import:
-    desc: Import discovered S3 buckets into Terraform state
-    dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    cmds:
-      - cd {{.TF_DIR}} && ../../scripts/import-with-credentials.sh
-    preconditions:
-      - sh: test -f ../../discovered-buckets.json
-        msg: "No discovered buckets found. Run 'task s3:discover' first."
-
-  # Dependency management
-  renovate:
-    desc: Run Renovate to check and update dependencies
-    cmds:
-      - ./scripts/run-renovate.sh
-      - echo "✓ Check GitHub for new pull requests"
-    preconditions:
-      - sh: test -f scripts/run-renovate.sh
-        msg: "Renovate script not found"
-
-  renovate:dry-run:
-    desc: Run Renovate in dry-run mode to preview updates
-    cmds:
-      - DRY_RUN=true ./scripts/run-renovate.sh
-    preconditions:
-      - sh: test -f scripts/run-renovate.sh
-        msg: "Renovate script not found"
-
-  deps:check:
-    desc: Check for dependency updates using Renovate (alias for renovate:dry-run)
-    deps: [renovate:dry-run]
-
-  deps:update:
-    desc: Run Renovate to create/update dependency PRs (alias for renovate)
-    deps: [renovate]
-
-  deps:test:
-    desc: Test Renovate configuration
-    cmds:
-      - ./scripts/test-renovate-config.sh
-
-  # Longhorn S3 backup verification
-  longhorn:verify:
-    desc: Verify Longhorn S3 backup permissions
-    cmds:
-      - |
-        echo "Checking for Longhorn credentials in 1Password..."
-        if ./scripts/verify-existing-longhorn-permissions.sh; then
-          echo "✓ Longhorn permissions verified using existing credentials"
-        else
-          echo "Could not verify using 1Password credentials"
-          echo "Please see: docs/verify-longhorn-permissions-checklist.md"
-          echo "Or create new IAM resources with: task longhorn:create-iam"
-        fi
-
-  longhorn:create-iam:
-    desc: Create IAM resources for Longhorn S3 backup
-    dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: |
-          # Find repository root by looking for Taskfile.yml
-          REPO_ROOT=$(pwd)
-          while [ "$REPO_ROOT" != "/" ] && [ ! -f "$REPO_ROOT/Taskfile.yml" ]; do
-            REPO_ROOT=$(dirname "$REPO_ROOT")
-          done
-          if [ -f "$REPO_ROOT/.env" ]; then
-            source "$REPO_ROOT/.env" && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-          else
-            echo "Error: .env not found" >&2
-            exit 1
-          fi
-      AWS_SECRET_ACCESS_KEY:
-        sh: |
-          # Find repository root by looking for Taskfile.yml
-          REPO_ROOT=$(pwd)
-          while [ "$REPO_ROOT" != "/" ] && [ ! -f "$REPO_ROOT/Taskfile.yml" ]; do
-            REPO_ROOT=$(dirname "$REPO_ROOT")
-          done
-          if [ -f "$REPO_ROOT/.env" ]; then
-            source "$REPO_ROOT/.env" && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-          else
-            echo "Error: .env not found" >&2
-            exit 1
-          fi
-    cmds:
-      - echo "Creating IAM resources for Longhorn..."
-      - tofu apply -target=aws_iam_user.longhorn_backup -target=aws_iam_access_key.longhorn_backup -target=aws_iam_policy.longhorn_backup_s3_access -target=aws_iam_user_policy_attachment.longhorn_backup_s3_access
-      - echo "✓ IAM resources created. Run 'task longhorn:show-config' to see configuration details"
-
-  longhorn:show-config:
-    desc: Show Longhorn S3 backup configuration
-    dir: '{{.TF_DIR}}'
-    cmds:
-      - |
-        echo "Longhorn S3 Backup Configuration:"
-        echo "================================"
-        echo ""
-        tofu output longhorn_configuration_instructions 2>/dev/null || echo "No Longhorn configuration found. Run 'task longhorn:create-iam' first."
-
-  # Credential management
-  creds:list:
-    desc: List all available credential services
-    dir: .
-    cmds:
-      - python3 scripts/update-credentials.py --list
-
-  creds:update:
-    desc: Update credentials for a specific service
-    dir: .
-    cmds:
-      - python3 scripts/update-credentials.py {{.SERVICE}}
-    requires:
-      vars: [SERVICE]
-    preconditions:
-      - sh: test -f scripts/update-credentials.py
-        msg: "Credential management script not found"
-
-  creds:postgresql:
-    desc: Update PostgreSQL backup credentials
-    cmds:
-      - task: creds:update
-        vars:
-          SERVICE: postgresql
-
-  creds:longhorn:
-    desc: Update Longhorn backup credentials
-    cmds:
-      - task: creds:update
-        vars:
-          SERVICE: longhorn
-
-  creds:home-assistant-postgres:
-    desc: Update Home Assistant PostgreSQL backup credentials
-    cmds:
-      - task: creds:update
-        vars:
-          SERVICE: home-assistant-postgres
-
-  creds:rotate:
-    desc: Rotate credentials for a service (apply Terraform + update 1Password)
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    cmds:
-      - echo "Rotating credentials for {{.SERVICE}}..."
-      - task: plan
-      - task: apply
-      - task: creds:update
-        vars:
-          SERVICE: '{{.SERVICE}}'
-      - echo "✓ Credentials rotated and updated in 1Password"
-    requires:
-      vars: [SERVICE]
-
-  creds:rotate:postgresql:
-    desc: Rotate PostgreSQL backup credentials (full cycle)
-    cmds:
-      - task: creds:rotate
-        vars:
-          SERVICE: postgresql
-
-  creds:rotate:longhorn:
-    desc: Rotate Longhorn backup credentials (full cycle)
-    cmds:
-      - task: creds:rotate
-        vars:
-          SERVICE: longhorn
-
-  creds:rotate:home-assistant-postgres:
-    desc: Rotate Home Assistant PostgreSQL backup credentials (full cycle)
-    cmds:
-      - task: creds:rotate
-        vars:
-          SERVICE: home-assistant-postgres
-
-  creds:generate:
-    desc: Generate configuration for a new service
-    dir: .
-    cmds:
-      - python3 scripts/generate-service-config.py --interactive
-    preconditions:
-      - sh: test -f scripts/generate-service-config.py
-        msg: "Service configuration generator not found"
-
-  creds:show:
-    desc: Show configuration for a specific service
-    dir: .
-    cmds:
-      - python3 scripts/generate-service-config.py --service {{.SERVICE}}
-    requires:
-      vars: [SERVICE]
-
-  creds:verify:
-    desc: Verify credentials are stored correctly in 1Password
-    cmds:
-      - |
-        echo "Verifying {{.SERVICE}} credentials in 1Password..."
-        if python3 scripts/update-credentials.py {{.SERVICE}} --dry-run 2>/dev/null; then
-          echo "✓ Credentials verified successfully"
-        else
-          echo "✗ Credential verification failed"
-          echo "Run 'task creds:update SERVICE={{.SERVICE}}' to update"
-        fi
-    requires:
-      vars: [SERVICE]
-
-  # State management
   state:list:
-    desc: List resources in Terraform state
+    desc: List resources in state
     dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
     env:
       AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
       AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
+        sh: op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_ACCESS_KEY_FIELD}"
     cmds:
       - tofu state list
 
-  state:lock:
-    desc: Lock the Terraform state
-    dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    cmds:
-      - tofu state lock
-
-  state:unlock:
-    desc: Unlock the Terraform state
-    dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    vars:
-      LOCK_ID: '{{.LOCK_ID}}'
-    cmds:
-      - tofu state unlock {{.LOCK_ID}}
-    requires:
-      vars: [LOCK_ID]
-
-  # Utility tasks
   clean:
-    desc: Clean up generated files and caches
+    desc: Clean up generated files
     cmds:
       - rm -rf environments/*/.terraform
       - rm -f environments/*/tfplan
       - rm -f environments/*/.terraform.lock.hcl
-      - rm -f discovered-buckets.json
-      - rm -f scripts/import-s3-buckets.sh
-      - echo "✓ Cleaned up temporary files"
-
-  console:
-    desc: Open an interactive OpenTofu console
-    dir: '{{.TF_DIR}}'
-    deps: [aws:auth]
-    env:
-      AWS_ACCESS_KEY_ID:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_ACCESS_KEY_FIELD}"
-      AWS_SECRET_ACCESS_KEY:
-        sh: source .env && op read "op://${OP_AWS_VAULT}/${OP_AWS_ITEM}/${OP_AWS_SECTION}/${OP_AWS_SECRET_KEY_FIELD}"
-    interactive: true
-    cmds:
-      - tofu console
-
-  docs:
-    desc: Generate documentation for Terraform modules
-    cmds:
-      - echo "Generating module documentation..."
-      - |
-        for module in modules/*/; do
-          if [ -d "$module" ]; then
-            echo "Documenting $module..."
-            # Add terraform-docs command here if available
-          fi
-        done
-
-  # CI/CD tasks
-  ci:
-    desc: Run all CI checks (lint, format, validate, plan)
-    cmds:
-      - task: lint
-      - task: fmt
-      - task: validate
-      - task: plan
-
-  pre-commit:
-    desc: Run pre-commit checks
-    cmds:
-      - task: lint
-      - task: fmt
-      - task: validate
-      - echo "✓ Pre-commit checks passed"
-
-  # Environment-specific shortcuts
-  dev:plan:
-    desc: Plan changes for dev environment
-    cmds:
-      - task: plan
-    vars:
-      ENVIRONMENT: dev
-
-  dev:apply:
-    desc: Apply changes to dev environment
-    cmds:
-      - task: apply
-    vars:
-      ENVIRONMENT: dev
-
-  prod:plan:
-    desc: Plan changes for production environment
-    cmds:
-      - task: plan
-    vars:
-      ENVIRONMENT: prod
-
-  prod:apply:
-    desc: Apply changes to production environment
-    cmds:
-      - task: apply
-    vars:
-      ENVIRONMENT: prod
-    prompt: This will apply changes to PRODUCTION. Are you sure?

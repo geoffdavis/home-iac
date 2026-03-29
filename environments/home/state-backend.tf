@@ -72,7 +72,7 @@ output "backend_config" {
   description = "Backend configuration for terraform block"
   value = {
     bucket = aws_s3_bucket.terraform_state.id
-    key    = "home-iac/dev/terraform.tfstate"
+    key    = "home-iac/home/terraform.tfstate"
     region = var.aws_region
     # dynamodb_table = aws_dynamodb_table.terraform_locks.name
     encrypt = true
