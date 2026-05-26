@@ -36,11 +36,18 @@ unifi_network_dhcp_pxe_validate_certs: false
 # bar in the controller UI: /manage/site/<this-value>/dashboard.
 unifi_network_dhcp_pxe_site: "default"
 
-# Target network display name. The role looks up the network by name
-# via the controller's GET /rest/networkconf endpoint, so set this to
-# whatever the network is called in the UDM UI (e.g. "LAN", "Default",
-# "Home Network"). Case-sensitive.
-unifi_network_dhcp_pxe_target_network_name: "LAN"
+# Target network display names. List of UDM Network display names to
+# enable PXE on — the role does a single GET against /rest/networkconf
+# and reconciles every name in this list. Case-sensitive; must match
+# exactly what shows in Settings → Networks (e.g. "Private", "IoT").
+# A typo or stale name fails fast with a list of available names so
+# you can fix the host_vars without going to the UI.
+#
+# Most homes only want PXE on the trusted/wired LAN. If you have
+# multiple internal networks where a host might legitimately PXE-boot
+# (mgmt, IoT-with-rescue, etc.), list them all. Don't enable on guest
+# / DMZ / WAN-facing networks (random PXE on guest = bad).
+unifi_network_dhcp_pxe_target_network_names: []
 
 # 1Password lookup for the controller's admin credentials. The role
 # expects a single item with `username` + `password` fields (the

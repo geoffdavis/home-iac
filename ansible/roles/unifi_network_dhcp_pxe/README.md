@@ -1,8 +1,10 @@
 # unifi_network_dhcp_pxe
 
 Idempotent management of DHCP PXE-boot Options 66 (next-server / TFTP
-server) and 67 (boot filename) on a named UniFi Network via the UDM
-Pro / UniFi Network controller's REST API.
+server) and 67 (boot filename) on one or more named UniFi Networks via
+the UDM Pro / UniFi Network controller's REST API. The role does a
+single GET against `/rest/networkconf`, then loops a per-network diff +
+partial PUT over every name in `unifi_network_dhcp_pxe_target_network_names`.
 
 Mirrors the existing [`cloudflare_tunnel_ingress`](../cloudflare_tunnel_ingress/README.md)
 role's pattern (controller-side, `delegate_to: localhost`, GET → diff
@@ -74,7 +76,7 @@ See `defaults/main.yml` for the full list. The interesting ones:
 | `unifi_network_dhcp_pxe_controller_url` | `https://172.29.50.1` | UDM Pro base URL. |
 | `unifi_network_dhcp_pxe_validate_certs` | `false` | UDM ships a self-signed cert by default. |
 | `unifi_network_dhcp_pxe_site` | `default` | UniFi site identifier (URL bar: `/manage/site/<this>/dashboard`). |
-| `unifi_network_dhcp_pxe_target_network_name` | `LAN` | Display name of the network to configure (case-sensitive). |
+| `unifi_network_dhcp_pxe_target_network_names` | `[]` | List of UDM Network display names to reconcile PXE on (case-sensitive; e.g. `["Private", "IoT"]`). |
 | `unifi_network_dhcp_pxe_next_server` | `{{ truenas_netbootxyz_app_lan_ip }}` | DHCP Option 66 value. |
 | `unifi_network_dhcp_pxe_boot_filename` | `netboot.xyz.efi` | DHCP Option 67 value (UEFI clients). |
 
@@ -84,11 +86,13 @@ See `defaults/main.yml` for the full list. The interesting ones:
   shifted the auth flow. The role asserts the CSRF token was returned
   and fail-fasts with a `curl` snippet so you can inspect the actual
   response headers.
-- **Network not found.** The fail message lists the available network
-  names, so you can pick the right one without going back to the UI.
-  Most common cause is a non-default `unifi_network_dhcp_pxe_site`
-  (the role defaults to "default", but the site identifier in
-  multi-site installs is whatever shows up in the controller URL bar).
+- **Network not found.** The fail message lists the requested names,
+  the names that WERE found, the missing names, and every available
+  network on the site — so you can fix the host_vars without going
+  back to the UI. Most common cause is a name typo (case matters) or
+  a non-default `unifi_network_dhcp_pxe_site` (defaults to "default";
+  the site identifier in multi-site installs is whatever shows up in
+  the controller URL bar).
 - **Cert validation failure.** The role defaults
   `validate_certs: false` because UDM Pro ships self-signed. If
   you've installed a trusted cert (Caddy / cert-manager / manual
@@ -104,16 +108,29 @@ ansible-playbook playbooks/truenas-netbootxyz-app.yml \
 # Apply
 ansible-playbook playbooks/truenas-netbootxyz-app.yml --limit nas-sdg
 
-# Verify from the UDM UI: Settings → Networks → LAN → DHCP, scroll
-# to "Network Boot" — should show Next Server = 172.29.50.20, Boot
-# File = netboot.xyz.efi.
+# Verify from the UDM UI: for each name in
+# `unifi_network_dhcp_pxe_target_network_names`, open
+# Settings → Networks → <name> → DHCP and scroll to "Network Boot".
+# Each should show Next Server = the role's `next_server` value and
+# Boot File = `netboot.xyz.efi` (or whatever `boot_filename` is set
+# to).
 
-# Or via curl directly:
+# Or via curl directly. Keep TARGETS in sync with the host_vars value
+# of `unifi_network_dhcp_pxe_target_network_names` — there's no shared
+# source of truth here, so a fleet edit to the list means updating
+# this snippet too (or extracting it via:
+#   uv run ansible -i ansible/inventory.yml -m debug \
+#     -a 'var=unifi_network_dhcp_pxe_target_network_names' nas-sdg
+# and piping into jq).
 COOKIE=$(curl -sk -c - -X POST "https://172.29.50.1/api/auth/login" \
   -H 'Content-Type: application/json' \
   -d '{"username":"...","password":"..."}' | grep TOKEN | awk '{print "TOKEN="$7}')
 
+TARGETS='["Private","IoT","NoT","Management"]'
+
 curl -sk "https://172.29.50.1/proxy/network/api/s/default/rest/networkconf" \
   -H "Cookie: $COOKIE" \
-  | jq '.data[] | select(.name=="LAN") | {dhcpd_boot_enabled, dhcpd_boot_server, dhcpd_boot_filename}'
+  | jq --argjson targets "$TARGETS" \
+       '.data[] | select(.name as $n | $targets | index($n))
+        | {name, dhcpd_boot_enabled, dhcpd_boot_server, dhcpd_boot_filename}'
 ```
