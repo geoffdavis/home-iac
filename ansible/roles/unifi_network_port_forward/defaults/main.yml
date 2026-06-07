@@ -1,0 +1,51 @@
+---
+# unifi_network_port_forward: idempotent management of port-forward
+# rules on a UDM Pro / UniFi Network controller via the REST API.
+# Runs entirely controller-side (delegate_to: localhost).
+#
+# Mirrors the unifi_network_dhcp_pxe role's structure: same UDM auth
+# flow (cookie + CSRF), same GET→diff→mutate pattern, same 1Password
+# credential lookup convention.
+
+# Opt-in per host. Default false so hosts with no port-forward
+# requirements inherit a no-op.
+unifi_network_port_forward_enabled: false
+
+# Controller base URL. Shares the default with unifi_network_dhcp_pxe.
+unifi_network_port_forward_controller_url: "https://172.29.50.1"
+
+# Cert validation. UDM Pro ships with a self-signed cert by default.
+unifi_network_port_forward_validate_certs: false
+
+# UniFi site identifier.
+unifi_network_port_forward_site: "default"
+
+# 1Password lookup for the controller's admin credentials. Shares the
+# same item as unifi_network_dhcp_pxe — a single "Limited Admin" UniFi
+# account covers both roles.
+unifi_network_port_forward_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_port_forward_creds_op_vault: "Automation"
+unifi_network_port_forward_creds_username_field: "username"
+unifi_network_port_forward_creds_password_field: "password"
+
+# List of port-forward rules to reconcile. Each entry:
+#
+#   name:      string  — display label; used as idempotency key
+#   enabled:   bool    — default true
+#   proto:     string  — "tcp" | "udp" | "tcp_udp"
+#   src:       string  — source IP filter; "any" for all WAN sources
+#   dst_port:  string  — external WAN port (or range "start-end")
+#   fwd:       string  — internal destination IP
+#   fwd_port:  string  — internal destination port
+#   log:       bool    — default false
+#   state:     string  — "present" (default) or "absent"
+#
+# Example — pin the netbird WireGuard port forward for nas-sdg:
+#   unifi_network_port_forward_rules:
+#     - name: netbird-nas-sdg
+#       proto: udp
+#       src: any
+#       dst_port: "51820"
+#       fwd: "172.29.50.20"
+#       fwd_port: "51820"
+unifi_network_port_forward_rules: []

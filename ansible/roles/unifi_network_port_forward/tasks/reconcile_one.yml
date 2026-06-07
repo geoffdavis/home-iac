@@ -1,0 +1,157 @@
+---
+# reconcile_one.yml — reconcile a single port-forward rule against the
+# UDM controller. Called in a loop from main.yml; loop_var is
+# `_udm_pf_rule` (the desired rule dict).
+#
+# Reads `_udm_pf_existing.json.data` (the full list fetched in main.yml)
+# and `_udm_pf_cookie` / `_udm_pf_csrf` (session state).
+#
+# Actions:
+#   state=present, not found  → POST (create)
+#   state=present, found + drift → PUT (update)
+#   state=present, found + match → no-op
+#   state=absent,  found       → DELETE
+#   state=absent,  not found   → no-op
+
+- name: "Find existing rule by name — {{ _udm_pf_rule.name }}"
+  ansible.builtin.set_fact:
+    _udm_pf_match: >-
+      {{ _udm_pf_existing.json.data
+         | selectattr('name', 'equalto', _udm_pf_rule.name)
+         | list }}
+
+# Build the desired payload from the rule dict, applying defaults for
+# optional fields. String-cast dst_port and fwd_port because UniFi
+# stores them as strings and Ansible may receive ints from YAML.
+- name: "Build desired payload — {{ _udm_pf_rule.name }}"
+  ansible.builtin.set_fact:
+    _udm_pf_desired:
+      name: "{{ _udm_pf_rule.name }}"
+      enabled: "{{ _udm_pf_rule.enabled | default(true) | bool }}"
+      proto: "{{ _udm_pf_rule.proto }}"
+      src: "{{ _udm_pf_rule.src | default('any') }}"
+      dst_port: "{{ _udm_pf_rule.dst_port | string }}"
+      fwd: "{{ _udm_pf_rule.fwd }}"
+      fwd_port: "{{ _udm_pf_rule.fwd_port | string }}"
+      log: "{{ _udm_pf_rule.log | default(false) | bool }}"
+
+# Compare the fields we own against the live record. We only diff the
+# fields in _udm_pf_desired — UniFi may store additional server-side
+# fields (_id, site_id, pfwd_interface) that we neither set nor care
+# about. A matching existing record has all our desired fields equal.
+- name: "Compute drift — {{ _udm_pf_rule.name }}"
+  ansible.builtin.set_fact:
+    _udm_pf_needs_update: >-
+      {{
+        _udm_pf_match | length > 0 and
+        (_udm_pf_desired.items() | list
+         | difference(
+             (_udm_pf_match[0] | dict2items
+              | selectattr('key', 'in', _udm_pf_desired.keys() | list)
+              | list)
+           ) | length) > 0
+      }}
+  when: (_udm_pf_rule.state | default('present')) == 'present'
+
+- name: "Debug — current vs desired — {{ _udm_pf_rule.name }}"
+  ansible.builtin.debug:
+    msg:
+      - "rule: {{ _udm_pf_rule.name }}"
+      - "state: {{ _udm_pf_rule.state | default('present') }}"
+      - "exists: {{ _udm_pf_match | length > 0 }}"
+      - "needs_update: {{ _udm_pf_needs_update | default('N/A') }}"
+      - "current: {{ _udm_pf_match[0] | default({}) | dict2items | selectattr('key', 'in', _udm_pf_desired.keys() | list) | items2dict }}"
+      - "desired: {{ _udm_pf_desired }}"
+
+# --- state=present, not found → POST ---
+- name: "POST (create) — {{ _udm_pf_rule.name }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_port_forward_controller_url }}/proxy/network/api/s/{{ unifi_network_port_forward_site }}/rest/portforward"
+    method: POST
+    headers:
+      Cookie: "{{ _udm_pf_cookie }}"
+      X-CSRF-Token: "{{ _udm_pf_csrf }}"
+    body_format: json
+    body: "{{ _udm_pf_desired }}"
+    validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_pf_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'present'
+    - _udm_pf_match | length == 0
+
+- name: "Assert POST succeeded — {{ _udm_pf_rule.name }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_pf_create_result.json.meta.rc == 'ok'
+    fail_msg: "Port-forward POST for '{{ _udm_pf_rule.name }}' returned unexpected rc: {{ _udm_pf_create_result.json }}"
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'present'
+    - _udm_pf_match | length == 0
+    - not ansible_check_mode
+
+# --- state=present, found + drift → PUT ---
+- name: "PUT (update) — {{ _udm_pf_rule.name }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_port_forward_controller_url }}/proxy/network/api/s/{{ unifi_network_port_forward_site }}/rest/portforward/{{ _udm_pf_match[0]['_id'] }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _udm_pf_cookie }}"
+      X-CSRF-Token: "{{ _udm_pf_csrf }}"
+    body_format: json
+    body: "{{ _udm_pf_desired }}"
+    validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_pf_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'present'
+    - _udm_pf_match | length > 0
+    - _udm_pf_needs_update | bool
+
+- name: "Assert PUT succeeded — {{ _udm_pf_rule.name }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_pf_update_result.json.meta.rc == 'ok'
+    fail_msg: "Port-forward PUT for '{{ _udm_pf_rule.name }}' returned unexpected rc: {{ _udm_pf_update_result.json }}"
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'present'
+    - _udm_pf_match | length > 0
+    - _udm_pf_needs_update | bool
+    - not ansible_check_mode
+
+# --- state=absent, found → DELETE ---
+- name: "DELETE — {{ _udm_pf_rule.name }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_port_forward_controller_url }}/proxy/network/api/s/{{ unifi_network_port_forward_site }}/rest/portforward/{{ _udm_pf_match[0]['_id'] }}"
+    method: DELETE
+    headers:
+      Cookie: "{{ _udm_pf_cookie }}"
+      X-CSRF-Token: "{{ _udm_pf_csrf }}"
+    validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_pf_delete_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'absent'
+    - _udm_pf_match | length > 0
+
+- name: "Assert DELETE succeeded — {{ _udm_pf_rule.name }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_pf_delete_result.json.meta.rc == 'ok'
+    fail_msg: "Port-forward DELETE for '{{ _udm_pf_rule.name }}' returned unexpected rc: {{ _udm_pf_delete_result.json }}"
+  when:
+    - (_udm_pf_rule.state | default('present')) == 'absent'
+    - _udm_pf_match | length > 0
+    - not ansible_check_mode
