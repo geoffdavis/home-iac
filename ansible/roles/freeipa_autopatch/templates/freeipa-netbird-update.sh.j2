@@ -1,0 +1,17 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Managed by the freeipa_autopatch Ansible role. Upgrades the netbird client
+# and restarts the daemon ONLY if the package actually changed (a restart
+# blips the wt0 overlay, briefly pausing IPA replication / Kerberos).
+set -euo pipefail
+
+before="$(rpm -q netbird 2>/dev/null || true)"
+dnf -y upgrade netbird
+after="$(rpm -q netbird 2>/dev/null || true)"
+
+if [ "$before" != "$after" ]; then
+  echo "netbird upgraded: ${before:-<none>} -> ${after:-<none>}; restarting daemon"
+  systemctl try-restart netbird
+else
+  echo "netbird already current (${after:-<none>}); no restart"
+fi

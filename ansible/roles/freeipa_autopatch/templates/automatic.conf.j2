@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# Managed by the freeipa_autopatch Ansible role. Security-only unattended
+# patching for the FreeIPA replica VMs. The truenas_freeipa_vm cloud-init
+# template writes an identical baseline so NEW VMs self-patch from first
+# boot — keep the two in sync.
+#
+# Reboots are intentionally NOT handled here (the `reboot` key defaults to
+# `never`): the staggered freeipa-autoreboot.timer owns reboot so the IPA
+# mesh never loses two replicas at once.
+[commands]
+# Only security-classified updates.
+upgrade_type = security
+# Per-run jitter handled by the systemd timer's RandomizedDelaySec instead.
+random_sleep = 0
+download_updates = yes
+apply_updates = yes
+
+[emitters]
+# Log to journal/stdio (captured by the systemd unit); no MTA on these VMs.
+emit_via = stdio
+
+[base]
+debuglevel = 1

@@ -1,0 +1,50 @@
+---
+# Defaults for the freeipa_autopatch role.
+#
+# This role runs ON the FreeIPA replica VMs (the ipa_replicas inventory
+# group), NOT on the TrueNAS host. It configures unattended security
+# patching + a daily netbird upgrade + staggered auto-reboot so the IPA
+# mesh self-patches between the (rare) full VM rebuilds.
+
+# --- OS security patching (dnf-automatic) -----------------------------------
+# dnf-automatic in security-only mode: download + apply security-classified
+# updates only. Reboots are NOT handled by dnf-automatic (reboot defaults to
+# never); the staggered freeipa-autoreboot timer below owns that so the mesh
+# never loses two replicas at once.
+freeipa_autopatch_security_enabled: true
+
+# When dnf-automatic.timer fires. Default 02:00 so patches land BEFORE the
+# staggered reboot windows (04:30 / 05:30 / 06:30 by site, see below).
+freeipa_autopatch_security_oncalendar: "*-*-* 02:00:00"
+
+# --- netbird daily upgrade --------------------------------------------------
+# netbird's RPM repo (pkgs.netbird.io) does not publish security updateinfo,
+# so security-only dnf-automatic skips it. A dedicated daily timer runs
+# `dnf -y upgrade netbird` and restarts the daemon ONLY if the package
+# actually changed (a netbird restart briefly blips the wt0 overlay).
+freeipa_autopatch_netbird_enabled: true
+freeipa_autopatch_netbird_oncalendar: "*-*-* 03:00:00"
+
+# --- staggered auto-reboot --------------------------------------------------
+# After patching, reboot ONLY if `needs-restarting -r` says a reboot is
+# required (kernel / glibc / openssl etc.). Staggered per-site so two
+# replicas never reboot in the same hour and the mesh keeps quorum.
+freeipa_autopatch_reboot_enabled: true
+
+# Reboot window = base_hour + per-site offset, at :reboot_minute. With the
+# defaults below: sdg=04:30, sct=05:30, cin=06:30 — distinct hours.
+freeipa_autopatch_reboot_base_hour: 4
+freeipa_autopatch_reboot_minute: 30
+freeipa_autopatch_reboot_site_offset_hours:
+  sdg: 0
+  sct: 1
+  cin: 2
+
+# Explicit override: set a full systemd OnCalendar string to bypass the
+# base_hour + site-offset computation entirely (e.g. for a site not in the
+# offset map, or to pin an exact window). Empty = compute from the vars above.
+freeipa_autopatch_reboot_oncalendar: ""
+
+# Spread the actual firing within each window so a clock-synced fleet does not
+# stampede the package mirror / reboot to the exact same second.
+freeipa_autopatch_randomized_delay: "20m"
