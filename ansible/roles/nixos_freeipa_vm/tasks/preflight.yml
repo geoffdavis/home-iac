@@ -58,25 +58,29 @@
       runs. Fetch the canonical hash from:
         https://download.rockylinux.org/pub/rocky/10/images/x86_64/CHECKSUM
 
-# 3. libvirtd liveness. `systemctl is-active` prints the unit state and
-# exits non-zero for anything but "active" — cheap, no side effects.
-- name: Preflight — query libvirtd unit state
+# 3. libvirtd liveness. NixOS runs libvirtd SOCKET-ACTIVATED: the daemon
+# exits after ~2min idle and `systemctl is-active libvirtd` reads
+# "inactive" even on a perfectly healthy host (bit the first live run,
+# 2026-07-06). Probe with `virsh version` instead — connecting to the
+# socket wakes the daemon, and a working connection is the property we
+# actually need.
+- name: Preflight — probe libvirtd via virsh (socket-activates on demand)
   ansible.builtin.command:
-    argv: [systemctl, is-active, libvirtd]
+    argv: [virsh, version]
   register: _nixos_freeipa_vm_libvirtd
   changed_when: false
-  # Don't let a dead unit kill the play with a bare rc=3 — the next
+  # Don't let a dead daemon kill the play with a bare rc — the next
   # task's assert carries the actionable message.
   failed_when: false
 
-- name: Preflight — assert libvirtd is active
+- name: Preflight — assert libvirtd answers
   ansible.builtin.assert:
     that:
       - _nixos_freeipa_vm_libvirtd.rc == 0
-      - _nixos_freeipa_vm_libvirtd.stdout | trim == 'active'
     fail_msg: |
-      libvirtd on {{ inventory_hostname }} is not active
-      (systemctl is-active said "{{ _nixos_freeipa_vm_libvirtd.stdout | trim }}").
+      libvirtd on {{ inventory_hostname }} did not answer `virsh version`
+      (rc={{ _nixos_freeipa_vm_libvirtd.rc }}):
+      {{ _nixos_freeipa_vm_libvirtd.stderr | default('') | trim }}
       The host's nix-personal config (modules/nas/virt.nix) should enable
       virtualisation.libvirtd — check `journalctl -u libvirtd` on the host
       and that the module is imported for this host.

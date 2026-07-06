@@ -27,7 +27,7 @@ nixos_freeipa_vm_pool: "nvme"
 # which would silently churn the image between runs even when sha256 is
 # correctly set. Bump together with the sha256 pin in
 # group_vars/nas_nixos.yml (and the twin vars in nas_truenas.yml).
-nixos_freeipa_vm_image_url: "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+nixos_freeipa_vm_image_url: "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2"
 
 # Operator MUST pin (group_vars/nas_nixos.yml carries the fleet-wide pin).
 # Preflight asserts non-empty before any state-changing tasks run;

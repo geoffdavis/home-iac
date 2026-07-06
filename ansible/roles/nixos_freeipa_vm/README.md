@@ -137,3 +137,12 @@ controller with the shared `truenas_freeipa_vm/files/build_seed_iso.py`
 group, available via `uv run ansible-playbook ...`). Building
 controller-side keeps one code path for both backends instead of
 maintaining a nix-shell ISO toolchain on the host.
+
+**Use `uv run ansible-playbook ...` — a bare/nix-profile `ansible-playbook`
+does NOT see pycdlib**, and the resulting failure is `no_log`-censored (the
+ISO payload carries the netbird setup key), which makes it miserable to
+diagnose — this bit the ipa-cin bring-up on 2026-07-06. If you must run
+outside uv, export `PYTHONPATH` pointing at a site-packages containing
+pycdlib (the nix-built ansible wrapper prepends its own interpreter dirs to
+PATH, so PATH-based tricks alone may not reach the delegated `python3`
+subprocess).
