@@ -1,0 +1,85 @@
+<!-- Rendered by nixos_freeipa_vm (do not edit on the host — the role owns
+     this definition; `virsh edit` changes will be preserved by libvirt but
+     are invisible to this repo). Shape notes:
+
+     * firmware='efi': libvirt's firmware auto-selection picks the OVMF
+       build the nix-personal virt module installs — no hardcoded
+       /nix/store OVMF paths that would break on every rebuild. Secure
+       boot is explicitly disabled: the auto-selector would otherwise
+       prefer a secboot OVMF whose empty key store can dump the guest
+       into the UEFI shell instead of booting the unenrolled disk.
+     * cpu host-passthrough: the qemu64 default models a pre-Nehalem CPU
+       that lacks the x86-64-v2 baseline Rocky 10's kernel requires —
+       the truenas sibling found the failure mode (silent hang right
+       after the boot penguin) the hard way.
+     * Root disk on SATA (q35's built-in AHCI), NOT virtio-blk: NixOS
+       OVMF *does* ship virtio drivers, but the fleet's existing replica
+       domains (the migrated ipa-sct) run AHCI/SATA and are proven
+       bootable — consistency beats a marginal I/O win on a low-write
+       IPA replica. Revisit fleet-wide if disk latency ever matters.
+     * Seed ISO as a SATA cdrom; wait_reachable ejects it (live +
+       persistent) after cloud-init succeeds, then deletes the file.
+     * NIC on the stock NAT network: the VM is a netbird peer and IPA
+       binds the overlay IP, so no LAN bridge is needed (deferred bench
+       task — see the role README). MAC is the deterministic 00:a0:98
+       derivation computed in provision_vm.yml.
+-->
+<domain type='kvm'>
+  <name>{{ nixos_freeipa_vm_name }}</name>
+  <memory unit='MiB'>{{ (nixos_freeipa_vm_memory | human_to_bytes) // (1024 * 1024) }}</memory>
+  <vcpu placement='static'>{{ nixos_freeipa_vm_vcpus | int }}</vcpu>
+  <os firmware='efi'>
+    <firmware>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+  <cpu mode='host-passthrough' check='none' migratable='on'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <disk type='block' device='disk'>
+      <!-- cache=none + io=native: raw zvol block device, no host page
+           cache double-buffering. -->
+      <driver name='qemu' type='raw' cache='none' io='native'/>
+      <source dev='/dev/zvol/{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}'/>
+      <target dev='sda' bus='sata'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{{ _nixos_freeipa_vm_seed_iso_remote }}'/>
+      <!-- Target dev 'sdb' is load-bearing: wait_reachable.yml ejects the
+           media by this name (virsh change-media <dom> sdb -\-eject). -->
+      <target dev='sdb' bus='sata'/>
+      <readonly/>
+    </disk>
+    <interface type='network'>
+      <source network='{{ nixos_freeipa_vm_libvirt_network }}'/>
+      <mac address='{{ _nixos_freeipa_vm_nic_mac }}'/>
+      <model type='virtio'/>
+    </interface>
+    <serial type='pty'>
+      <target port='0'/>
+    </serial>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+    <!-- Guest-agent channel: cloud-init enables qemu-guest-agent in the
+         VM; this is what makes `virsh domifaddr -\-source agent` and
+         clean shutdowns work. -->
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <rng model='virtio'>
+      <backend model='random'>/dev/urandom</backend>
+    </rng>
+    <memballoon model='virtio'/>
+  </devices>
+</domain>

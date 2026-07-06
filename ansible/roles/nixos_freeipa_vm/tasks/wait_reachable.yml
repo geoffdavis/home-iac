@@ -1,0 +1,170 @@
+---
+# Three-stage wait: DNS → SSH → cloud-init done — mirrors
+# truenas_freeipa_vm/tasks/wait_reachable.yml. Each stage gates on the
+# previous one being possible: DNS-resolvable means netbird's controller
+# has registered the peer; SSH-reachable means the VM has finished initial
+# boot enough to run sshd; cloud-init done means netbird is up + packages
+# installed + /etc/hosts patched + the VM is ready for the freeipa-install
+# playbook. Stage 4 (seed cleanup) diverges from the truenas sibling:
+# libvirt can eject CDROM media from a RUNNING domain, so there's no
+# stop → detach → start downtime cycle here.
+
+# Stage 1: DNS — runs on the controller, NOT inside the SSH-to-VM block below.
+- name: Compose netbird FQDN
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_netbird_fqdn: "{{ nixos_freeipa_vm_netbird_peer_name }}.netbird.cloud"
+
+- name: Wait for netbird FQDN to resolve (OS resolver — hits netbird DNS hook)
+  ansible.builtin.command:
+    argv: [python3, -c, "import socket; print(socket.gethostbyname('{{ _nixos_freeipa_vm_netbird_fqdn }}'))"]
+  delegate_to: localhost
+  become: false
+  register: _nixos_freeipa_vm_dig
+  changed_when: false
+  failed_when: false   # take over failure handling in the next task so we
+                       # can give the operator a useful diagnosis instead
+                       # of a generic ansible-retry-exhausted timeout
+  until: _nixos_freeipa_vm_dig.rc == 0 and _nixos_freeipa_vm_dig.stdout | trim | length > 0
+  retries: 60
+  delay: 5
+  # Netbird does NOT publish *.netbird.cloud to public DNS — only the
+  # OS-resolver hook the netbird daemon installs on the controller can
+  # answer, so this must go through getaddrinfo()/gethostbyname()
+  # (python's socket module), not dig/host. 60 × 5s = 5 min is plenty:
+  # peer registration completes within seconds of `netbird up` returning
+  # success inside the VM. See the truenas sibling for the full story.
+
+- name: Assert netbird FQDN resolved (clear guidance on the common failure)
+  ansible.builtin.assert:
+    that: _nixos_freeipa_vm_dig.stdout | trim | length > 0
+    fail_msg: |
+      Netbird FQDN '{{ _nixos_freeipa_vm_netbird_fqdn }}' didn't resolve after
+      60 × 5s = 5 min via socket.gethostbyname (OS resolver, which on
+      this controller is hooked by the netbird daemon for *.netbird.cloud).
+      The most common cause: the netbird setup key in
+      1Password ('{{ nixos_freeipa_vm_netbird_setup_key_op_item }}') was
+      already consumed by a prior failed VM-creation attempt. Setup keys
+      are one-use; once consumed, `netbird up` inside the VM gets rejected
+      and the peer never registers, so the FQDN never appears.
+
+      Recovery:
+        1. In the netbird dashboard, mint a fresh one-off setup key.
+        2. Update the 1Password item in place:
+             op item edit '{{ nixos_freeipa_vm_netbird_setup_key_op_item }}' \
+               --vault {{ nixos_freeipa_vm_op_vault }} \
+               credential='<new-key>'
+        3. Delete the half-baked domain on {{ inventory_hostname }}:
+             virsh destroy {{ nixos_freeipa_vm_name }}   # ignore "domain is not running"
+             virsh undefine --nvram {{ nixos_freeipa_vm_name }}
+             zfs destroy {{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}
+        4. Re-run this playbook.
+
+      For other causes (e.g., netbird controller outage), check
+      https://status.netbird.io or contact netbird support.
+
+# Capture the IP we just resolved — used as the delegate_to target for
+# Stages 2-4 instead of the FQDN. Direct-IP + `-F /dev/null` sidesteps
+# both the macOS scutil resolver churn during peer-registration sync and
+# the netbird ssh-proxy rewrite in /etc/ssh/ssh_config.d/99-netbird.conf
+# (full rationale in the truenas sibling's wait_reachable.yml).
+- name: Capture resolved overlay IP for direct SSH (avoid macOS resolver churn)
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_overlay_ip: "{{ _nixos_freeipa_vm_dig.stdout | trim }}"
+
+- name: Stages 2-3 — connect to VM via overlay IP (no DNS dependency)
+  vars:
+    ansible_user: rocky
+    ansible_connection: ssh
+    ansible_ssh_common_args: "-F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  block:
+    # Stage 2: SSH reachable.
+    - name: Wait for SSH on the VM via overlay IP
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 300
+        sleep: 5
+      delegate_to: "{{ _nixos_freeipa_vm_overlay_ip }}"
+
+    # Stage 3: cloud-init done. become: root-only runtime cfg on Rocky 10
+    # makes a non-root `cloud-init status` fail spuriously (PermissionError
+    # on /run/cloud-init/cloud.cfg).
+    - name: Wait for cloud-init to finish on the VM
+      ansible.builtin.command:
+        argv: [cloud-init, status, --wait]
+      delegate_to: "{{ _nixos_freeipa_vm_overlay_ip }}"
+      register: _nixos_freeipa_vm_cloud_init
+      failed_when: false
+      changed_when: false
+      become: true
+
+    # Failure path: pull cloud-init.log onto the controller.
+    - name: Fetch cloud-init log if cloud-init didn't succeed
+      ansible.builtin.fetch:
+        src: /var/log/cloud-init.log
+        dest: "/tmp/freeipa-vm-{{ nixos_freeipa_vm_name }}-cloud-init.log"
+        flat: true
+      delegate_to: "{{ _nixos_freeipa_vm_overlay_ip }}"
+      become: true   # /var/log/cloud-init.log is mode 600 root:root on Rocky
+      when: _nixos_freeipa_vm_cloud_init.rc != 0
+
+- name: Assert cloud-init reported success
+  ansible.builtin.assert:
+    that: _nixos_freeipa_vm_cloud_init.rc == 0
+    fail_msg: |
+      cloud-init on VM '{{ nixos_freeipa_vm_name }}' exited rc={{ _nixos_freeipa_vm_cloud_init.rc }}.
+      Log fetched to /tmp/freeipa-vm-{{ nixos_freeipa_vm_name }}-cloud-init.log on the controller.
+      Common failures:
+        - netbird up rejected (consumed setup key) → mint fresh key in netbird dashboard
+        - dnf install failed (network issue or package not available) → check repo accessibility
+        - VM lacks outbound internet → check the libvirt NAT network
+          ('{{ nixos_freeipa_vm_libvirt_network }}') is active and the host
+          forwards/NATs (virsh net-info / nftables on the host)
+      To re-try from scratch on {{ inventory_hostname }}:
+        virsh destroy {{ nixos_freeipa_vm_name }}
+        virsh undefine --nvram {{ nixos_freeipa_vm_name }}
+        zfs destroy {{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}
+      then re-run this playbook.
+
+# Stage 4 (late cleanup): cloud-init has consumed the seed. Eject the
+# CDROM media + delete the seed ISO from the host, so the VM is fully
+# self-contained for future starts (autostart on host reboot, manual
+# virsh start). If we deleted the ISO while the domain XML still pointed
+# at it, every future start would fail on the missing source file.
+#
+# Unlike the TrueNAS middleware (which refuses device changes on a
+# RUNNING VM, forcing a stop/start cycle there), libvirt ejects media
+# live: --live updates the running domain, --config the persistent XML.
+# The empty (sourceless) cdrom device that remains is harmless.
+#
+# Probe-then-eject instead of tracking a created-this-run flag: virsh
+# domblklist shows the CURRENT media, so this also heals the edge where
+# a previous run died after start but before eject.
+- name: Query domain block devices (is the seed ISO still inserted?)
+  ansible.builtin.command:
+    argv: [virsh, domblklist, "{{ nixos_freeipa_vm_name }}"]
+  register: _nixos_freeipa_vm_domblklist
+  changed_when: false
+  when: _nixos_freeipa_vm_cloud_init.rc == 0
+
+- name: Eject the seed ISO from the running domain (live + persistent)
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - change-media
+      - "{{ nixos_freeipa_vm_name }}"
+      - sdb    # matches <target dev='sdb'> in domain.xml.j2
+      - --eject
+      - --live
+      - --config
+  when:
+    - _nixos_freeipa_vm_cloud_init.rc == 0
+    - _nixos_freeipa_vm_seed_iso_remote in _nixos_freeipa_vm_domblklist.stdout
+  changed_when: true
+
+- name: Delete the seed ISO from the host (no longer referenced by the domain)
+  ansible.builtin.file:
+    path: "{{ _nixos_freeipa_vm_seed_iso_remote }}"
+    state: absent
+  when:
+    - _nixos_freeipa_vm_cloud_init.rc == 0
+    - _nixos_freeipa_vm_seed_iso_remote is defined

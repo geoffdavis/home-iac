@@ -1,0 +1,214 @@
+---
+# Preflight: fail loudly with operator-actionable messages if any
+# precondition is missing. Runs BEFORE any state-changing task (with one
+# deliberate exception: the image-cache dataset ensure at the end, which
+# mirrors truenas_freeipa_vm's preflight doing the same).
+
+# 0. Refuse to run against anything that isn't NixOS. This is the guard
+# that makes the nas_nixos group's transitional dual-membership hosts
+# (nas-sct is in both nas_truenas and nas_nixos while its TrueNAS-era
+# config winds down — see inventory.yml) safe: an unbounded
+# `nixos-freeipa-vm.yml` run that lands on a non-NixOS host stops here,
+# before any zfs/virsh calls. Requires gather_facts: true in the playbook.
+- name: Preflight — assert the target host runs NixOS
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] is defined
+      - ansible_facts['distribution'] == 'NixOS'
+    fail_msg: |
+      {{ inventory_hostname }} reports distribution
+      "{{ ansible_facts['distribution'] | default('<facts not gathered>') }}",
+      not NixOS. This role shells out to virsh/qemu-img/zfs and expects
+      the nix-personal virt module's layout (modules/nas/virt.nix). For a
+      TrueNAS host use roles/truenas_freeipa_vm (playbooks/truenas-freeipa-vm.yml)
+      instead.
+
+# 1. If the operator overrode nixos_freeipa_vm_nic_mac (default null),
+# the value must be a valid colon-separated MAC string. Catch typos here
+# at preflight instead of letting `virsh define` reject the domain XML
+# halfway through provisioning. The deterministic auto-generated MAC
+# takes the same format and trivially passes this check.
+- name: Preflight — assert nixos_freeipa_vm_nic_mac is a valid MAC when set
+  ansible.builtin.assert:
+    that:
+      - nixos_freeipa_vm_nic_mac is match('^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+    fail_msg: |
+      nixos_freeipa_vm_nic_mac override is "{{ nixos_freeipa_vm_nic_mac }}"
+      which is not a valid unicast MAC address. Expected format:
+      xx:xx:xx:xx:xx:xx (six hex octets separated by colons).
+  when: nixos_freeipa_vm_nic_mac is not none
+
+# 2. Operator MUST pin the qcow2 sha256 (group_vars/nas_nixos.yml carries
+# the fleet-wide pin). Default in defaults/main.yml is empty string so
+# this fires loudly when omitted — prevents silently fetching arbitrary
+# upstream bytes between runs.
+- name: Preflight — assert nixos_freeipa_vm_image_sha256 is pinned
+  ansible.builtin.assert:
+    that:
+      - nixos_freeipa_vm_image_sha256 is defined
+      - nixos_freeipa_vm_image_sha256 | length > 0
+    fail_msg: |
+      nixos_freeipa_vm_image_sha256 is unset.
+
+      The role downloads a Rocky 10 GenericCloud qcow2 from:
+        {{ nixos_freeipa_vm_image_url }}
+
+      You MUST pin its sha256 (fleet-wide pin lives in
+      group_vars/nas_nixos.yml) to prevent silent image churn between
+      runs. Fetch the canonical hash from:
+        https://download.rockylinux.org/pub/rocky/10/images/x86_64/CHECKSUM
+
+# 3. libvirtd liveness. `systemctl is-active` prints the unit state and
+# exits non-zero for anything but "active" — cheap, no side effects.
+- name: Preflight — query libvirtd unit state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, libvirtd]
+  register: _nixos_freeipa_vm_libvirtd
+  changed_when: false
+  # Don't let a dead unit kill the play with a bare rc=3 — the next
+  # task's assert carries the actionable message.
+  failed_when: false
+
+- name: Preflight — assert libvirtd is active
+  ansible.builtin.assert:
+    that:
+      - _nixos_freeipa_vm_libvirtd.rc == 0
+      - _nixos_freeipa_vm_libvirtd.stdout | trim == 'active'
+    fail_msg: |
+      libvirtd on {{ inventory_hostname }} is not active
+      (systemctl is-active said "{{ _nixos_freeipa_vm_libvirtd.stdout | trim }}").
+      The host's nix-personal config (modules/nas/virt.nix) should enable
+      virtualisation.libvirtd — check `journalctl -u libvirtd` on the host
+      and that the module is imported for this host.
+
+# 4. Tooling presence: virsh + qemu-img (both installed by the nix-personal
+# virt module). `--version` probes double as sanity checks that the
+# binaries actually execute, not just exist on $PATH.
+- name: Preflight — probe virsh + qemu-img
+  ansible.builtin.command:
+    argv: ["{{ item }}", --version]
+  loop: [virsh, qemu-img]
+  register: _nixos_freeipa_vm_tools
+  changed_when: false
+  failed_when: false
+
+- name: Preflight — assert virsh + qemu-img are runnable
+  ansible.builtin.assert:
+    that:
+      - _nixos_freeipa_vm_tools.results | rejectattr('rc', 'eq', 0) | list | length == 0
+    fail_msg: |
+      Missing/broken tooling on {{ inventory_hostname }}:
+      {% for r in _nixos_freeipa_vm_tools.results if r.rc != 0 %}
+        - {{ r.item }}: rc={{ r.rc }} {{ r.msg | default(r.stderr | default('')) }}
+      {% endfor %}
+      Both binaries come from nix-personal's modules/nas/virt.nix
+      (virt-manager CLI tools + qemu) — rebuild the host with that module
+      imported.
+
+# 5. The libvirt NAT network the NIC attaches to must be defined, active,
+# and autostarted (so the VM regains networking after a host reboot
+# without operator help — the domain itself is autostarted too).
+# `virsh net-info` output is "Active: yes/no" + "Autostart: yes/no" lines.
+- name: Preflight — query libvirt network '{{ nixos_freeipa_vm_libvirt_network }}'
+  ansible.builtin.command:
+    argv: [virsh, net-info, "{{ nixos_freeipa_vm_libvirt_network }}"]
+  register: _nixos_freeipa_vm_net_info
+  changed_when: false
+  failed_when: false
+
+- name: Preflight — assert the libvirt network is defined
+  ansible.builtin.assert:
+    that:
+      - _nixos_freeipa_vm_net_info.rc == 0
+    fail_msg: |
+      libvirt network '{{ nixos_freeipa_vm_libvirt_network }}' is not
+      defined on {{ inventory_hostname }}
+      (stderr: {{ _nixos_freeipa_vm_net_info.stderr | default('') | trim }}).
+      libvirt ships the stock NAT network XML; define it once on the host:
+        virsh net-define /run/current-system/sw/share/libvirt/networks/default.xml
+      (or `nix build`/locate default.xml under the libvirt package) then
+      re-run this playbook — the start/autostart tasks below handle the rest.
+
+- name: Preflight — start the libvirt network if inactive
+  ansible.builtin.command:
+    argv: [virsh, net-start, "{{ nixos_freeipa_vm_libvirt_network }}"]
+  when: _nixos_freeipa_vm_net_info.stdout is not search('Active:\s+yes')
+  changed_when: true
+
+- name: Preflight — mark the libvirt network autostart
+  ansible.builtin.command:
+    argv: [virsh, net-autostart, "{{ nixos_freeipa_vm_libvirt_network }}"]
+  when: _nixos_freeipa_vm_net_info.stdout is not search('Autostart:\s+yes')
+  changed_when: true
+
+# 6. Image cache dataset: where the qcow2 lands AND where the seed ISO is
+# staged. Ensure it exists, then resolve its ACTUAL mountpoint from ZFS
+# instead of assuming /mnt/<pool>/ (a TrueNAS-ism — NixOS pools mount
+# wherever the nix config put them).
+- name: Preflight — query image cache dataset
+  ansible.builtin.command:
+    argv:
+      - zfs
+      - list
+      - -H
+      - -o
+      - name
+      - "{{ nixos_freeipa_vm_pool }}/{{ nixos_freeipa_vm_image_cache_dataset }}"
+  register: _nixos_freeipa_vm_cache_ds
+  changed_when: false
+  failed_when: false
+
+- name: Preflight — create image cache dataset if absent
+  ansible.builtin.command:
+    argv:
+      - zfs
+      - create
+      - "{{ nixos_freeipa_vm_pool }}/{{ nixos_freeipa_vm_image_cache_dataset }}"
+  when: _nixos_freeipa_vm_cache_ds.rc != 0
+  changed_when: true
+
+- name: Preflight — resolve image cache dataset mountpoint
+  ansible.builtin.command:
+    argv:
+      - zfs
+      - get
+      - -H
+      - -o
+      - value
+      - mountpoint
+      - "{{ nixos_freeipa_vm_pool }}/{{ nixos_freeipa_vm_image_cache_dataset }}"
+  register: _nixos_freeipa_vm_cache_mp
+  changed_when: false
+
+- name: Preflight — assert the cache dataset has a real mountpoint
+  ansible.builtin.assert:
+    that:
+      - _nixos_freeipa_vm_cache_mp.stdout | trim is match('^/')
+    fail_msg: |
+      Dataset {{ nixos_freeipa_vm_pool }}/{{ nixos_freeipa_vm_image_cache_dataset }}
+      reports mountpoint "{{ _nixos_freeipa_vm_cache_mp.stdout | trim }}"
+      (legacy/none?). The role needs a mounted filesystem to cache the
+      qcow2 + stage the seed ISO — fix the dataset's mountpoint property.
+
+- name: Preflight — record image cache directory fact
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_image_dir: "{{ _nixos_freeipa_vm_cache_mp.stdout | trim }}"
+
+# 7. Fetch netbird setup key from 1P (no_log).
+- name: Preflight — fetch netbird setup key
+  ansible.builtin.set_fact:
+    _netbird_setup_key: "{{ lookup('community.general.onepassword',
+      nixos_freeipa_vm_netbird_setup_key_op_item,
+      field='password',
+      vault=nixos_freeipa_vm_op_vault) }}"
+  no_log: true
+
+# 8. Fetch operator SSH pubkey from 1P. Field name 'public key' — the
+# convention for 1P SSH Key items (same item the truenas sibling uses).
+- name: Preflight — fetch operator SSH pubkey
+  ansible.builtin.set_fact:
+    _operator_ssh_pubkey: "{{ lookup('community.general.onepassword',
+      nixos_freeipa_vm_ssh_pubkey_op_item,
+      field='public key',
+      vault=nixos_freeipa_vm_op_vault) }}"
+  no_log: false  # pubkey isn't a secret

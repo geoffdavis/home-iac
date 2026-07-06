@@ -1,0 +1,269 @@
+---
+# Idempotent VM provisioning via virsh/qemu-img/zfs shellouts over SSH —
+# the NixOS-host equivalent of truenas_freeipa_vm's midclt vm.* helper.
+# No middleware in the way means no python-helper-over-unix-socket dance:
+# every step is a plain command with argv (no secrets ever hit argv; the
+# only secret-bearing artifacts are the in-memory userdata fact and the
+# seed ISO, both no_log + cleaned up).
+#
+# Flow:
+#   1. Probe whether the domain already exists (virsh domstate)
+#   2. absent  → cache the Rocky 10 qcow2 on the host (get_url + sha256) →
+#                render cloud-init userdata (SHARED template from
+#                truenas_freeipa_vm, via a var-mapping shim) →
+#                build NoCloud seed ISO on the CONTROLLER (pycdlib) →
+#                copy it to the image-cache dir →
+#                ensure <pool>/vms parent dataset → create the sparse zvol →
+#                wait for /dev/zvol/<name> (udev race) →
+#                qemu-img convert the qcow2 onto the zvol →
+#                virsh define (rendered domain XML) → autostart → start
+#      shut off → virsh start
+#      running  → noop
+#   3. Always-cleanup: rm the controller-side seed ISO + the staged domain
+#      XML on the host. The HOST-side seed ISO is deliberately NOT removed
+#      here — wait_reachable.yml ejects + deletes it only after cloud-init
+#      has consumed the seed (deleting a file a defined CDROM still points
+#      at would break the next virsh start).
+
+# --- Step 1: probe existing domain (idempotency) --------------------------
+
+# `virsh domstate` prints one line ("running" / "shut off" / "paused" / …)
+# and exits non-zero when the domain doesn't exist. String sentinel
+# 'absent' instead of a null: set_fact templating is non-native, so a
+# Jinja `none` would arrive as the STRING "None" and silently break
+# `is none` conditions.
+- name: Query existing domain state (idempotency probe)
+  ansible.builtin.command:
+    argv: [virsh, domstate, "{{ nixos_freeipa_vm_name }}"]
+  register: _nixos_freeipa_vm_domstate
+  changed_when: false
+  failed_when: false
+
+- name: Parse existing domain state
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_existing_state: >-
+      {{ 'absent' if _nixos_freeipa_vm_domstate.rc != 0
+         else (_nixos_freeipa_vm_domstate.stdout | trim) }}
+
+# --- Step 2: freeze staging paths (needed by always-cleanup + wait_reachable)
+
+# Frozen BEFORE the block so the always-cleanup can target them even if a
+# task fails before its register: would have run. The remote seed ISO path
+# is also consumed by wait_reachable.yml (eject + delete after cloud-init).
+- name: Freeze staging paths (controller + host) for always-cleanup
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_seed_iso_local: "/tmp/freeipa-vm-seed-{{ nixos_freeipa_vm_name }}-{{ ansible_facts.date_time.epoch }}.iso"
+    _nixos_freeipa_vm_seed_iso_remote: "{{ _nixos_freeipa_vm_image_dir }}/{{ nixos_freeipa_vm_name }}-seed.iso"
+    _nixos_freeipa_vm_domain_xml_remote: "/tmp/freeipa-vm-domain-{{ nixos_freeipa_vm_name }}-{{ ansible_facts.date_time.epoch }}.xml"
+
+# Deterministic MAC — same formula (and same NetApp OUI 00:a0:98, matching
+# what TrueNAS auto-generates) as truenas_freeipa_vm, so a replica keeps
+# its MAC identity across a backend migration. The 2-arg `default(value,
+# true)` fires for any FALSY value including the role-default null;
+# single-arg default() would let a null override slip through untouched.
+- name: Compute the NIC MAC (deterministic from VM name unless overridden)
+  ansible.builtin.set_fact:
+    _nixos_freeipa_vm_nic_mac: >-
+      {{ nixos_freeipa_vm_nic_mac
+         | default('00:a0:98:' ~ ((nixos_freeipa_vm_name | hash('sha256'))[:6]
+                                  | regex_replace('(..)(..)(..)', '\1:\2:\3')), true) }}
+
+- name: Provision the domain (with always-cleanup of staging artifacts)
+  block:
+    # ---- Create path: everything below only runs when the domain is absent.
+    - name: Create the domain from scratch
+      when: _nixos_freeipa_vm_existing_state == 'absent'
+      block:
+        # -- qcow2 cache (idempotent: checksum short-circuits re-download) --
+        - name: Compose image path on the host
+          ansible.builtin.set_fact:
+            _nixos_freeipa_vm_image_path: "{{ _nixos_freeipa_vm_image_dir }}/{{ nixos_freeipa_vm_image_url | basename }}"
+
+        - name: Download (or verify cached) Rocky 10 qcow2 on the host
+          ansible.builtin.get_url:
+            url: "{{ nixos_freeipa_vm_image_url }}"
+            dest: "{{ _nixos_freeipa_vm_image_path }}"
+            checksum: "sha256:{{ nixos_freeipa_vm_image_sha256 }}"
+            mode: "0644"
+            # 15 min ceiling — image is ~1.5GB, even a slow site should
+            # beat 15min; past that, the operator wants to know the
+            # mirror is sick.
+            timeout: 900
+
+        # -- cloud-init seed --------------------------------------------
+        # REUSE the truenas_freeipa_vm cloud-init template by path — one
+        # source of truth for the in-VM bring-up (netbird repo + packages
+        # + firewalld zone + /etc/hosts overlay patch + key scrub). The
+        # template speaks truenas_freeipa_vm_* var names; the task-level
+        # vars: shim maps this role's namespace onto them for the render.
+        # The _netbird_setup_key / _operator_ssh_pubkey facts it consumes
+        # were set (same names) by preflight.
+        - name: Render cloud-init userdata to an in-memory fact (shared template)
+          ansible.builtin.set_fact:
+            _cloud_init_userdata: "{{ lookup('template',
+              role_path ~ '/../truenas_freeipa_vm/templates/cloud-init-userdata.yaml.j2') }}"
+          vars:
+            truenas_freeipa_vm_server_fqdn: "{{ nixos_freeipa_vm_server_fqdn }}"
+            truenas_freeipa_vm_netbird_peer_name: "{{ nixos_freeipa_vm_netbird_peer_name }}"
+            truenas_freeipa_vm_netbird_management_url: "{{ nixos_freeipa_vm_netbird_management_url }}"
+            truenas_freeipa_vm_operator_debug_password: "{{ nixos_freeipa_vm_operator_debug_password }}"
+          no_log: true   # contains the netbird setup key
+
+        - name: Compose cloud-init meta-data (NoCloud instance-id + local-hostname)
+          ansible.builtin.set_fact:
+            _cloud_init_metadata: |
+              instance-id: {{ nixos_freeipa_vm_name }}
+              local-hostname: {{ nixos_freeipa_vm_server_fqdn }}
+
+        # Build the NoCloud ISO on the ANSIBLE CONTROLLER with the shared
+        # pycdlib helper. The NixOS host could carry ISO tooling via nix,
+        # but building controller-side keeps one code path for both
+        # backends AND keeps the raw setup key off the wire except inside
+        # the finished ISO (copied 0600, deleted after cloud-init).
+        - name: Build NoCloud seed ISO on the controller (pycdlib)
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ role_path }}/../truenas_freeipa_vm/files/build_seed_iso.py"
+            stdin: "{{ {'out_path': _nixos_freeipa_vm_seed_iso_local,
+                        'user_data': _cloud_init_userdata,
+                        'meta_data': _cloud_init_metadata} | to_json }}"
+          delegate_to: localhost
+          become: false
+          changed_when: true
+          no_log: true   # stdin contains the netbird setup key
+
+        - name: Copy seed ISO to the host image cache directory
+          ansible.builtin.copy:
+            src: "{{ _nixos_freeipa_vm_seed_iso_local }}"
+            dest: "{{ _nixos_freeipa_vm_seed_iso_remote }}"
+            mode: "0600"
+            owner: root
+            group: root
+          no_log: true   # the ISO bytes contain the setup key in plaintext
+
+        # -- root zvol ---------------------------------------------------
+        # Plain `zfs create` (no middleware API) per the nas-cin
+        # convention. Parent first: `zfs create <pool>/vms/<name>` fails
+        # with "parent does not exist" otherwise (no -p: implicit
+        # multi-level creation could mask a pool-name typo).
+        - name: Query vms/ parent dataset on the pool
+          ansible.builtin.command:
+            argv: [zfs, list, -H, -o, name, "{{ nixos_freeipa_vm_pool }}/vms"]
+          register: _nixos_freeipa_vm_vms_parent
+          changed_when: false
+          failed_when: false
+
+        - name: Create vms/ parent dataset if absent
+          ansible.builtin.command:
+            argv: [zfs, create, "{{ nixos_freeipa_vm_pool }}/vms"]
+          when: _nixos_freeipa_vm_vms_parent.rc != 0
+          changed_when: true
+
+        # Skip-if-exists: a re-run after a failed partial provision (zvol
+        # created, define never reached) must not trip on EEXIST.
+        - name: Query root zvol
+          ansible.builtin.command:
+            argv:
+              - zfs
+              - list
+              - -H
+              - -o
+              - name
+              - "{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"
+          register: _nixos_freeipa_vm_zvol
+          changed_when: false
+          failed_when: false
+
+        - name: Create sparse root zvol
+          ansible.builtin.command:
+            argv:
+              - zfs
+              - create
+              - -s
+              - -V
+              # human_to_bytes → exact byte count; sidesteps zfs suffix
+              # parsing ("30GB" vs "30G") and matches what the truenas
+              # sibling feeds pool.dataset.create.
+              - "{{ nixos_freeipa_vm_disk_size | human_to_bytes }}"
+              - "{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"
+          when: _nixos_freeipa_vm_zvol.rc != 0
+          changed_when: true
+
+        # udev race: zfs create returns before /dev/zvol/<name> is
+        # populated. This bit the truenas sibling's first live deploy
+        # (ENOENT on the import); poll up to 30s before the convert.
+        - name: Wait for the zvol device node (udev race)
+          ansible.builtin.wait_for:
+            path: "/dev/zvol/{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"
+            timeout: 30
+
+        # Always (re)import on the create path, even if the zvol
+        # pre-existed: domain-absent + zvol-present means a previous
+        # provision died between zvol create and virsh define, and a
+        # fresh image is the correct recovery.
+        - name: Import the qcow2 onto the zvol (qemu-img convert → raw)
+          ansible.builtin.command:
+            argv:
+              - qemu-img
+              - convert
+              - -O
+              - raw
+              - "{{ _nixos_freeipa_vm_image_path }}"
+              - "/dev/zvol/{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"
+          changed_when: true
+
+        # -- define + autostart -------------------------------------------
+        # Domain XML carries no secrets (the seed ISO path is just a
+        # path), so a plain staged file is fine — removed in always: only
+        # to keep /tmp tidy.
+        - name: Render domain XML to the host
+          ansible.builtin.template:
+            src: domain.xml.j2
+            dest: "{{ _nixos_freeipa_vm_domain_xml_remote }}"
+            mode: "0600"
+            owner: root
+            group: root
+
+        - name: Define the domain
+          ansible.builtin.command:
+            argv: [virsh, define, "{{ _nixos_freeipa_vm_domain_xml_remote }}"]
+          changed_when: true
+
+        - name: Mark the domain autostart (survives host reboots)
+          ansible.builtin.command:
+            argv: [virsh, autostart, "{{ nixos_freeipa_vm_name }}"]
+          changed_when: true
+
+    # ---- Start path: freshly defined OR pre-existing but shut off. ------
+    - name: Start the domain
+      ansible.builtin.command:
+        argv: [virsh, start, "{{ nixos_freeipa_vm_name }}"]
+      when: _nixos_freeipa_vm_existing_state in ['absent', 'shut off']
+      changed_when: true
+
+    # RUNNING (or paused — leave alone for the operator) → noop; surface
+    # the state so a `-v`-less run still shows why nothing changed.
+    - name: Report noop for an already-active domain
+      ansible.builtin.debug:
+        msg: >-
+          Domain {{ nixos_freeipa_vm_name }} already exists in state
+          '{{ _nixos_freeipa_vm_existing_state }}' — nothing to do.
+      when: _nixos_freeipa_vm_existing_state not in ['absent', 'shut off']
+  always:
+    # Controller-side seed ISO is secret-bearing — scrub on every code
+    # path including provisioning failures. state:absent is a no-op on
+    # the domain-already-existed path (file was never built).
+    - name: Cleanup — remove staged seed ISO on the controller (contains setup key)
+      ansible.builtin.file:
+        path: "{{ _nixos_freeipa_vm_seed_iso_local }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      failed_when: false
+
+    - name: Cleanup — remove staged domain XML on the host
+      ansible.builtin.file:
+        path: "{{ _nixos_freeipa_vm_domain_xml_remote }}"
+        state: absent
+      failed_when: false

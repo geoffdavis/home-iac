@@ -1,0 +1,130 @@
+---
+# argument_specs locks the role's input schema at role-entry so malformed
+# host_vars overrides fail with a per-key error before any state changes.
+# Mirrors roles/truenas_freeipa_vm/meta/argument_specs.yml under the
+# nixos_freeipa_vm_* namespace.
+argument_specs:
+  main:
+    short_description: Provision a Rocky Linux libvirt/KVM VM on a NixOS host for FreeIPA.
+    description:
+      - >-
+        Creates a libvirt domain (via virsh define/start over SSH) backed by
+        a ZFS zvol, seeded with a NoCloud cloud-init ISO that installs
+        netbird + freeipa-server packages, registers the netbird peer, and
+        configures /etc/hostname + /etc/hosts. Waits for the VM to be
+        reachable via its netbird FQDN before returning. Does NOT run
+        ipa-replica-install — that's the freeipa-install.yml playbook's job,
+        targeting the VM directly via the ipa_replicas inventory group.
+      - >-
+        This is the NixOS-host sibling of truenas_freeipa_vm (which drives
+        the TrueNAS middleware's vm.* API instead of virsh). Task flow,
+        cloud-init template, and seed-ISO builder are shared or mirrored —
+        see the role README for the mapping.
+    options:
+      nixos_freeipa_vm_name:
+        type: str
+        required: true
+        description: |
+          VM name (e.g. "ipa-cin"). Used verbatim as the libvirt domain
+          name (libvirt allows hyphens — no sanitization dance like
+          TrueNAS's alphanumeric-only vm.create name field) and in the
+          zvol path <pool>/vms/<name>.
+      nixos_freeipa_vm_server_fqdn:
+        type: str
+        required: true
+        description: |
+          Fully-qualified hostname for the FreeIPA replica (e.g.
+          ipa-cin.ipa.geoffdavis.com). Set as the VM's /etc/hostname and
+          used in the /etc/hosts entry that maps FQDN → overlay IP.
+      nixos_freeipa_vm_netbird_peer_name:
+        type: str
+        required: true
+        description: Netbird peer name (e.g. "ipa-cin-replica"). Becomes the netbird FQDN.
+      nixos_freeipa_vm_netbird_setup_key_op_item:
+        type: str
+        required: true
+        description: 1P item holding the netbird setup key (vault = nixos_freeipa_vm_op_vault).
+      nixos_freeipa_vm_ssh_pubkey_op_item:
+        type: str
+        required: true
+        description: |
+          1P item containing the operator's SSH public key (field 'public key' or
+          'notesPlain'). Wired into cloud-init's authorized_keys for the rocky user.
+      nixos_freeipa_vm_image_sha256:
+        type: str
+        required: true
+        description: |
+          SHA256 of the Rocky 10 GenericCloud qcow2 image at
+          nixos_freeipa_vm_image_url. MUST be pinned (the role default is
+          empty string and preflight fails fast if unset), forcing explicit
+          reproducibility instead of silently fetching whatever upstream
+          resolves at any given moment. Fetch the canonical hash from the
+          CHECKSUM file beside the image.
+      nixos_freeipa_vm_image_url:
+        type: str
+        required: false
+        description: |
+          URL of the Rocky 10 GenericCloud qcow2. Defaults to the upstream
+          mirror; override only if you've staged the image on a local mirror.
+      nixos_freeipa_vm_image_cache_dataset:
+        type: str
+        required: false
+        description: |
+          Dataset (relative to nixos_freeipa_vm_pool) where the cached
+          qcow2 + staged seed ISO live. Default: "iso". The actual
+          directory is resolved from the dataset's ZFS mountpoint at
+          preflight (no hardcoded /mnt/<pool> assumption).
+      nixos_freeipa_vm_vcpus:
+        type: int
+        required: false
+        description: vCPU count (default 2).
+      nixos_freeipa_vm_memory:
+        type: str
+        required: false
+        description: |
+          RAM size with unit (default "4GB"). Converted to MiB in the
+          domain XML template.
+      nixos_freeipa_vm_disk_size:
+        type: str
+        required: false
+        description: |
+          Root zvol size with unit (default "30GB"). Converted to bytes
+          for `zfs create -V` (exact byte counts sidestep any suffix-
+          parsing ambiguity).
+      nixos_freeipa_vm_pool:
+        type: str
+        required: false
+        description: ZFS pool name hosting the VM zvol + image cache (default "nvme").
+      nixos_freeipa_vm_libvirt_network:
+        type: str
+        required: false
+        description: |
+          libvirt network for the VM NIC (default "default", the stock NAT
+          network). Preflight ensures it's active + autostarted. A LAN
+          bridge is deliberately NOT used — see README.
+      nixos_freeipa_vm_netbird_management_url:
+        type: str
+        required: false
+        description: Netbird mgmt URL (default https://api.netbird.io).
+      nixos_freeipa_vm_op_vault:
+        type: str
+        required: false
+        description: 1P vault containing the role's secrets (default "nas-overlay").
+      nixos_freeipa_vm_nic_mac:
+        type: raw   # null OR str — argument_spec str-type rejects None
+        required: false
+        description: |
+          Override the VM NIC's MAC address. Default null → the role auto-
+          generates a deterministic MAC from the VM name (format
+          00:a0:98:xx:xx:xx where the suffix octets are the first three
+          bytes of sha256(vm_name) rendered as colon-separated hex — same
+          formula as truenas_freeipa_vm). Set to a colon-separated MAC
+          string to override (e.g. when importing an existing VM with a
+          specific MAC or to resolve a collision).
+      nixos_freeipa_vm_operator_debug_password:
+        type: raw   # null OR str
+        required: false
+        description: |
+          Optional console-login password for the rocky user (default null
+          = no password, console login impossible). Pull from 1P per-host
+          when a `virsh console` debugging fallback is anticipated.
