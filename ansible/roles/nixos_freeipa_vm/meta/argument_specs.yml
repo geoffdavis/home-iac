@@ -1,8 +1,6 @@
 ---
 # argument_specs locks the role's input schema at role-entry so malformed
 # host_vars overrides fail with a per-key error before any state changes.
-# Mirrors roles/truenas_freeipa_vm/meta/argument_specs.yml under the
-# nixos_freeipa_vm_* namespace.
 argument_specs:
   main:
     short_description: Provision a Rocky Linux libvirt/KVM VM on a NixOS host for FreeIPA.
@@ -15,20 +13,14 @@ argument_specs:
         reachable via its netbird FQDN before returning. Does NOT run
         ipa-replica-install — that's the freeipa-install.yml playbook's job,
         targeting the VM directly via the ipa_replicas inventory group.
-      - >-
-        This is the NixOS-host sibling of truenas_freeipa_vm (which drives
-        the TrueNAS middleware's vm.* API instead of virsh). Task flow,
-        cloud-init template, and seed-ISO builder are shared or mirrored —
-        see the role README for the mapping.
     options:
       nixos_freeipa_vm_name:
         type: str
         required: true
         description: |
           VM name (e.g. "ipa-cin"). Used verbatim as the libvirt domain
-          name (libvirt allows hyphens — no sanitization dance like
-          TrueNAS's alphanumeric-only vm.create name field) and in the
-          zvol path <pool>/vms/<name>.
+          name (libvirt allows hyphens, so no sanitization is needed) and
+          in the zvol path <pool>/vms/<name>.
       nixos_freeipa_vm_server_fqdn:
         type: str
         required: true
@@ -117,10 +109,9 @@ argument_specs:
           Override the VM NIC's MAC address. Default null → the role auto-
           generates a deterministic MAC from the VM name (format
           00:a0:98:xx:xx:xx where the suffix octets are the first three
-          bytes of sha256(vm_name) rendered as colon-separated hex — same
-          formula as truenas_freeipa_vm). Set to a colon-separated MAC
-          string to override (e.g. when importing an existing VM with a
-          specific MAC or to resolve a collision).
+          bytes of sha256(vm_name) rendered as colon-separated hex). Set to
+          a colon-separated MAC string to override (e.g. when importing an
+          existing VM with a specific MAC or to resolve a collision).
       nixos_freeipa_vm_operator_debug_password:
         type: raw   # null OR str
         required: false

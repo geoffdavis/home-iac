@@ -6,13 +6,10 @@ packages installed". The actual `ipa-replica-install` runs from a separate
 playbook (`playbooks/freeipa-install.yml`) that targets the VM directly via
 the `ipa_replicas` inventory group.
 
-This is the NixOS-host sibling of [`truenas_freeipa_vm`](../truenas_freeipa_vm/):
-same task flow (preflight → provision → wait_reachable), same cloud-init
-payload, same seed-ISO builder — but where the TrueNAS role drives the
-middleware's `vm.*` API through `midclt`/`truenas_api_client`, this role
-shells out to `virsh` / `qemu-img` / `zfs` over SSH (the host's libvirtd
-comes from nix-personal's `modules/nas/virt.nix`). First consumer:
-`ipa-cin` on nas-cin.
+The role drives libvirt directly — it shells out to `virsh` / `qemu-img` /
+`zfs` over SSH; the host's libvirtd/OVMF/zfs come from nix-personal's
+[`modules/nas/virt.nix`](https://github.com/geoffdavis/nix-personal/blob/main/modules/nas/virt.nix).
+Task flow: preflight → provision → wait_reachable.
 
 ## What this role does
 
@@ -25,18 +22,18 @@ comes from nix-personal's `modules/nas/virt.nix`). First consumer:
    fetch the netbird setup key + operator SSH pubkey from 1Password.
 2. **Provision** — probe `virsh domstate`; if the domain is absent:
    download the Rocky 10 GenericCloud qcow2 to the image-cache dir
-   (sha256-verified, idempotent), render the **shared** cloud-init
-   template (`truenas_freeipa_vm/templates/cloud-init-userdata.yaml.j2`,
-   via a var-mapping shim), build the NoCloud seed ISO on the controller
-   (shared `build_seed_iso.py`, pycdlib), copy it over, `zfs create` the
+   (sha256-verified, idempotent), render the cloud-init template
+   (`templates/cloud-init-userdata.yaml.j2`), build the NoCloud seed ISO on
+   the controller (`files/build_seed_iso.py`, pycdlib), copy it over,
+   `zfs create` the
    `<pool>/vms` parent + sparse 30G zvol, `qemu-img convert` the image
    onto the zvol, `virsh define` a rendered domain XML, `virsh autostart`,
    `virsh start`. If the domain exists: start it if shut off, else no-op.
 3. **Wait reachable** — poll DNS for the netbird FQDN → wait for SSH →
    wait for `cloud-init status --wait`; then eject the seed CDROM media
-   **live** (`virsh change-media --eject --live --config` — no
-   stop/start cycle like the TrueNAS middleware forces) and delete the
-   ISO. On failure, fetch `/var/log/cloud-init.log` to the controller.
+   **live** (`virsh change-media --eject --live --config` — no stop/start
+   cycle) and delete the ISO. On failure, fetch `/var/log/cloud-init.log`
+   to the controller.
 
 Cloud-init inside the VM installs netbird + freeipa-server packages,
 registers the netbird peer, patches `/etc/hosts` to map the FQDN to the
@@ -65,13 +62,9 @@ losing remote access, and nothing requires it today.
 
 ## Variable namespacing
 
-All inputs are `nixos_freeipa_vm_*`. There is **no fallback** to the
-`truenas_freeipa_vm_*` names: NixOS hosts aren't in `nas_truenas`, so
-those vars are undefined here and a cross-namespace default chain would
-fail confusingly instead of loudly. The site-derived identity vars are
-mirrored (small, documented duplication) in
-[`group_vars/nas_nixos.yml`](../../group_vars/nas_nixos.yml) — keep them
-in sync with `group_vars/nas_truenas.yml` when the convention changes.
+All inputs are `nixos_freeipa_vm_*`. The site-derived identity vars are set
+once in [`group_vars/nas_nixos.yml`](../../group_vars/nas_nixos.yml),
+derived from `site` / `inventory_hostname`.
 
 ## Required variables
 
@@ -101,7 +94,7 @@ the fleet convention.
 | `nixos_freeipa_vm_libvirt_network` | `default` | Stock NAT network (see networking section) |
 | `nixos_freeipa_vm_netbird_management_url` | `https://api.netbird.io` | |
 | `nixos_freeipa_vm_op_vault` | `nas-overlay` | 1P vault for the role's secrets |
-| `nixos_freeipa_vm_nic_mac` | `null` → deterministic | `00:a0:98:` + sha256(name)[:6], same formula as the TrueNAS sibling |
+| `nixos_freeipa_vm_nic_mac` | `null` → deterministic | `00:a0:98:` + sha256(name)[:6] |
 | `nixos_freeipa_vm_operator_debug_password` | `null` | Set from 1P per-host for a `virsh console` fallback |
 
 ## Usage
@@ -131,12 +124,11 @@ ansible-playbook -i inventory.yml playbooks/freeipa-install.yml --limit ipa_boot
 
 ## Controller-side dependency: pycdlib
 
-Same as the TrueNAS sibling: the NoCloud seed ISO is built on the ansible
-controller with the shared `truenas_freeipa_vm/files/build_seed_iso.py`
-(pure-Python pycdlib, declared in the top-level `pyproject.toml` `[dev]`
-group, available via `uv run ansible-playbook ...`). Building
-controller-side keeps one code path for both backends instead of
-maintaining a nix-shell ISO toolchain on the host.
+The NoCloud seed ISO is built on the ansible controller with
+`files/build_seed_iso.py` (pure-Python pycdlib, declared in the top-level
+`pyproject.toml` `[dev]` group, available via `uv run ansible-playbook ...`).
+Building controller-side avoids maintaining a nix-shell ISO toolchain on
+the host.
 
 **Use `uv run ansible-playbook ...` — a bare/nix-profile `ansible-playbook`
 does NOT see pycdlib**, and the resulting failure is `no_log`-censored (the

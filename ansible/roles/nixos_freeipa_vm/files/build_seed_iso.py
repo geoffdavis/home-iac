@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Build a cloud-init NoCloud seed ISO on the Ansible controller.
 
-The TrueNAS-side `vm.*` middleware path needs cloud-init delivered as a
-CDROM-attached ISO (the Incus path's `cloud-init.user-data` config key is
-unavailable for libvirt VMs). TrueNAS hosts ship NO ISO-creation tooling
-(genisoimage / mkisofs / xorriso are all absent), so we build the ISO on
-the controller with pycdlib (pure Python) and rsync it over.
+libvirt VMs take cloud-init from a CDROM-attached NoCloud ISO. Rather than
+require ISO-creation tooling (genisoimage / mkisofs / xorriso) on every
+target host, we build the ISO on the controller with pycdlib (pure Python)
+and copy it over.
 
 Stdin protocol (JSON, single line OK or pretty-printed):
 

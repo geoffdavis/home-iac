@@ -1,13 +1,11 @@
 ---
-# Three-stage wait: DNS → SSH → cloud-init done — mirrors
-# truenas_freeipa_vm/tasks/wait_reachable.yml. Each stage gates on the
+# Three-stage wait: DNS → SSH → cloud-init done. Each stage gates on the
 # previous one being possible: DNS-resolvable means netbird's controller
 # has registered the peer; SSH-reachable means the VM has finished initial
 # boot enough to run sshd; cloud-init done means netbird is up + packages
 # installed + /etc/hosts patched + the VM is ready for the freeipa-install
-# playbook. Stage 4 (seed cleanup) diverges from the truenas sibling:
-# libvirt can eject CDROM media from a RUNNING domain, so there's no
-# stop → detach → start downtime cycle here.
+# playbook. Stage 4 (seed cleanup) ejects the CDROM media from the RUNNING
+# domain, so there's no stop → detach → start downtime cycle.
 
 # Stage 1: DNS — runs on the controller, NOT inside the SSH-to-VM block below.
 - name: Compose netbird FQDN
@@ -32,7 +30,7 @@
   # answer, so this must go through getaddrinfo()/gethostbyname()
   # (python's socket module), not dig/host. 60 × 5s = 5 min is plenty:
   # peer registration completes within seconds of `netbird up` returning
-  # success inside the VM. See the truenas sibling for the full story.
+  # success inside the VM.
 
 - name: Assert netbird FQDN resolved (clear guidance on the common failure)
   ansible.builtin.assert:
@@ -65,8 +63,7 @@
 # Capture the IP we just resolved — used as the delegate_to target for
 # Stages 2-4 instead of the FQDN. Direct-IP + `-F /dev/null` sidesteps
 # both the macOS scutil resolver churn during peer-registration sync and
-# the netbird ssh-proxy rewrite in /etc/ssh/ssh_config.d/99-netbird.conf
-# (full rationale in the truenas sibling's wait_reachable.yml).
+# the netbird ssh-proxy rewrite in /etc/ssh/ssh_config.d/99-netbird.conf.
 - name: Capture resolved overlay IP for direct SSH (avoid macOS resolver churn)
   ansible.builtin.set_fact:
     _nixos_freeipa_vm_overlay_ip: "{{ _nixos_freeipa_vm_dig.stdout | trim }}"
@@ -131,10 +128,9 @@
 # virsh start). If we deleted the ISO while the domain XML still pointed
 # at it, every future start would fail on the missing source file.
 #
-# Unlike the TrueNAS middleware (which refuses device changes on a
-# RUNNING VM, forcing a stop/start cycle there), libvirt ejects media
-# live: --live updates the running domain, --config the persistent XML.
-# The empty (sourceless) cdrom device that remains is harmless.
+# libvirt ejects media live: --live updates the running domain, --config
+# the persistent XML — no stop/start cycle. The empty (sourceless) cdrom
+# device that remains is harmless.
 #
 # Probe-then-eject instead of tracking a created-this-run flag: virsh
 # domblklist shows the CURRENT media, so this also heals the edge where

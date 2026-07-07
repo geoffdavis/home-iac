@@ -1,7 +1,7 @@
 ---
-# Entry point for the nixos_freeipa_vm role — the NixOS/libvirt sibling of
-# truenas_freeipa_vm. Order is load-bearing: preflight asserts
-# preconditions BEFORE any state-changing call; provision_vm fetches
+# Entry point for the nixos_freeipa_vm role. Order is load-bearing:
+# preflight asserts preconditions BEFORE any state-changing call;
+# provision_vm fetches
 # secrets and creates the domain; wait_reachable blocks until the VM is
 # ready for the freeipa-install playbook.
 - name: Include preflight checks

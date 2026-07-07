@@ -1,16 +1,13 @@
 ---
-# Idempotent VM provisioning via virsh/qemu-img/zfs shellouts over SSH —
-# the NixOS-host equivalent of truenas_freeipa_vm's midclt vm.* helper.
-# No middleware in the way means no python-helper-over-unix-socket dance:
-# every step is a plain command with argv (no secrets ever hit argv; the
+# Idempotent VM provisioning via virsh/qemu-img/zfs shellouts over SSH.
+# Every step is a plain command with argv (no secrets ever hit argv; the
 # only secret-bearing artifacts are the in-memory userdata fact and the
 # seed ISO, both no_log + cleaned up).
 #
 # Flow:
 #   1. Probe whether the domain already exists (virsh domstate)
 #   2. absent  → cache the Rocky 10 qcow2 on the host (get_url + sha256) →
-#                render cloud-init userdata (SHARED template from
-#                truenas_freeipa_vm, via a var-mapping shim) →
+#                render cloud-init userdata (templates/cloud-init-userdata.yaml.j2) →
 #                build NoCloud seed ISO on the CONTROLLER (pycdlib) →
 #                copy it to the image-cache dir →
 #                ensure <pool>/vms parent dataset → create the sparse zvol →
@@ -56,11 +53,10 @@
     _nixos_freeipa_vm_seed_iso_remote: "{{ _nixos_freeipa_vm_image_dir }}/{{ nixos_freeipa_vm_name }}-seed.iso"
     _nixos_freeipa_vm_domain_xml_remote: "/tmp/freeipa-vm-domain-{{ nixos_freeipa_vm_name }}-{{ ansible_facts.date_time.epoch }}.xml"
 
-# Deterministic MAC — same formula (and same NetApp OUI 00:a0:98, matching
-# what TrueNAS auto-generates) as truenas_freeipa_vm, so a replica keeps
-# its MAC identity across a backend migration. The 2-arg `default(value,
-# true)` fires for any FALSY value including the role-default null;
-# single-arg default() would let a null override slip through untouched.
+# Deterministic MAC (NetApp OUI 00:a0:98 prefix) so a replica keeps a
+# stable MAC identity. The 2-arg `default(value, true)` fires for any
+# FALSY value including the role-default null; single-arg default() would
+# let a null override slip through untouched.
 - name: Compute the NIC MAC (deterministic from VM name unless overridden)
   ansible.builtin.set_fact:
     _nixos_freeipa_vm_nic_mac: >-
@@ -93,19 +89,12 @@
         # -- cloud-init seed --------------------------------------------
         # The cloud-init template drives the in-VM bring-up (netbird repo +
         # packages + firewalld zone + /etc/hosts overlay patch + key scrub).
-        # It still speaks the legacy truenas_freeipa_vm_* var names, so the
-        # task-level vars: shim maps this role's namespace onto them for the
-        # render. The _netbird_setup_key / _operator_ssh_pubkey facts it
-        # consumes were set (same names) by preflight.
+        # It reads this role's nixos_freeipa_vm_* vars directly, plus the
+        # _netbird_setup_key / _operator_ssh_pubkey facts preflight set.
         - name: Render cloud-init userdata to an in-memory fact
           ansible.builtin.set_fact:
             _cloud_init_userdata: "{{ lookup('template',
               role_path ~ '/templates/cloud-init-userdata.yaml.j2') }}"
-          vars:
-            truenas_freeipa_vm_server_fqdn: "{{ nixos_freeipa_vm_server_fqdn }}"
-            truenas_freeipa_vm_netbird_peer_name: "{{ nixos_freeipa_vm_netbird_peer_name }}"
-            truenas_freeipa_vm_netbird_management_url: "{{ nixos_freeipa_vm_netbird_management_url }}"
-            truenas_freeipa_vm_operator_debug_password: "{{ nixos_freeipa_vm_operator_debug_password }}"
           no_log: true   # contains the netbird setup key
 
         - name: Compose cloud-init meta-data (NoCloud instance-id + local-hostname)
@@ -181,16 +170,14 @@
               - -s
               - -V
               # human_to_bytes → exact byte count; sidesteps zfs suffix
-              # parsing ("30GB" vs "30G") and matches what the truenas
-              # sibling feeds pool.dataset.create.
+              # parsing ("30GB" vs "30G").
               - "{{ nixos_freeipa_vm_disk_size | human_to_bytes }}"
               - "{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"
           when: _nixos_freeipa_vm_zvol.rc != 0
           changed_when: true
 
         # udev race: zfs create returns before /dev/zvol/<name> is
-        # populated. This bit the truenas sibling's first live deploy
-        # (ENOENT on the import); poll up to 30s before the convert.
+        # populated (ENOENT on the convert otherwise); poll up to 30s.
         - name: Wait for the zvol device node (udev race)
           ansible.builtin.wait_for:
             path: "/dev/zvol/{{ nixos_freeipa_vm_pool }}/vms/{{ nixos_freeipa_vm_name }}"

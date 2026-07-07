@@ -10,8 +10,7 @@
        into the UEFI shell instead of booting the unenrolled disk.
      * cpu host-passthrough: the qemu64 default models a pre-Nehalem CPU
        that lacks the x86-64-v2 baseline Rocky 10's kernel requires —
-       the truenas sibling found the failure mode (silent hang right
-       after the boot penguin) the hard way.
+       without it the guest silently hangs right after the boot penguin.
      * Root disk on SATA (q35's built-in AHCI), NOT virtio-blk: NixOS
        OVMF *does* ship virtio drivers, but the fleet's existing replica
        domains (the migrated ipa-sct) run AHCI/SATA and are proven

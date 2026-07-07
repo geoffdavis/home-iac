@@ -1,15 +1,11 @@
 ---
 # Preflight: fail loudly with operator-actionable messages if any
 # precondition is missing. Runs BEFORE any state-changing task (with one
-# deliberate exception: the image-cache dataset ensure at the end, which
-# mirrors truenas_freeipa_vm's preflight doing the same).
+# deliberate exception: the image-cache dataset ensure at the end).
 
-# 0. Refuse to run against anything that isn't NixOS. This is the guard
-# that makes the nas_nixos group's transitional dual-membership hosts
-# (nas-sct is in both nas_truenas and nas_nixos while its TrueNAS-era
-# config winds down — see inventory.yml) safe: an unbounded
-# `nixos-freeipa-vm.yml` run that lands on a non-NixOS host stops here,
-# before any zfs/virsh calls. Requires gather_facts: true in the playbook.
+# 0. Refuse to run against anything that isn't NixOS — belt-and-braces so
+# a misdirected `nixos-freeipa-vm.yml` run stops here, before any
+# zfs/virsh calls. Requires gather_facts: true in the playbook.
 - name: Preflight — assert the target host runs NixOS
   ansible.builtin.assert:
     that:
@@ -146,8 +142,8 @@
 
 # 6. Image cache dataset: where the qcow2 lands AND where the seed ISO is
 # staged. Ensure it exists, then resolve its ACTUAL mountpoint from ZFS
-# instead of assuming /mnt/<pool>/ (a TrueNAS-ism — NixOS pools mount
-# wherever the nix config put them).
+# instead of assuming a fixed path — NixOS pools mount wherever the nix
+# config puts them.
 - name: Preflight — query image cache dataset
   ansible.builtin.command:
     argv:
@@ -207,7 +203,7 @@
   no_log: true
 
 # 8. Fetch operator SSH pubkey from 1P. Field name 'public key' — the
-# convention for 1P SSH Key items (same item the truenas sibling uses).
+# convention for 1P SSH Key items.
 - name: Preflight — fetch operator SSH pubkey
   ansible.builtin.set_fact:
     _operator_ssh_pubkey: "{{ lookup('community.general.onepassword',
