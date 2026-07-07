@@ -13,11 +13,10 @@ role's pattern (controller-side, `delegate_to: localhost`, GET → diff
 ## Why a role
 
 UDM Pro DHCP options are click-ops by default. Putting them in Ansible
-keeps the PXE next-server bound to whatever IP serves the netbootxyz
-catalog app, so a host-side rename or migration doesn't silently
-leave DHCP pointing at a dead TFTP server. The default
-`unifi_network_dhcp_pxe_next_server` is `{{ truenas_netbootxyz_app_lan_ip }}` —
-the two values can't drift.
+keeps the PXE next-server (the IP serving the netbootxyz TFTP server)
+declarative, so it doesn't silently drift or leave DHCP pointing at a
+dead server. Set `unifi_network_dhcp_pxe_next_server` in host_vars (it
+has no default).
 
 ## Credentials
 
@@ -77,7 +76,7 @@ See `defaults/main.yml` for the full list. The interesting ones:
 | `unifi_network_dhcp_pxe_validate_certs` | `false` | UDM ships a self-signed cert by default. |
 | `unifi_network_dhcp_pxe_site` | `default` | UniFi site identifier (URL bar: `/manage/site/<this>/dashboard`). |
 | `unifi_network_dhcp_pxe_target_network_names` | `[]` | List of UDM Network display names to reconcile PXE on (case-sensitive; e.g. `["Private", "IoT"]`). |
-| `unifi_network_dhcp_pxe_next_server` | `{{ truenas_netbootxyz_app_lan_ip }}` | DHCP Option 66 value. |
+| `unifi_network_dhcp_pxe_next_server` | `""` (set in host_vars) | DHCP Option 66 value — the TFTP server IP. |
 | `unifi_network_dhcp_pxe_boot_filename` | `netboot.xyz.efi` | DHCP Option 67 value (UEFI clients). |
 
 ## Failure modes worth knowing
@@ -102,11 +101,11 @@ See `defaults/main.yml` for the full list. The interesting ones:
 
 ```bash
 # Dry-run: shows current vs desired without applying
-ansible-playbook playbooks/truenas-netbootxyz-app.yml \
+uv run ansible-playbook playbooks/unifi-network.yml \
   --limit nas-sdg --check
 
 # Apply
-ansible-playbook playbooks/truenas-netbootxyz-app.yml --limit nas-sdg
+uv run ansible-playbook playbooks/unifi-network.yml --limit nas-sdg
 
 # Verify from the UDM UI: for each name in
 # `unifi_network_dhcp_pxe_target_network_names`, open

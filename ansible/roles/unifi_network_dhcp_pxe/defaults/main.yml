@@ -14,8 +14,8 @@
 # role's README for the design rationale.
 
 # Opt-in per host. Default false so non-PXE-serving hosts inherit a
-# no-op. Flipped to true in host_vars alongside truenas_netbootxyz_app
-# on the host that hosts the PXE service.
+# no-op. Flipped to true in host_vars on the host that serves PXE
+# (nas-sdg, which runs the netbootxyz TFTP server via nix-personal).
 unifi_network_dhcp_pxe_enabled: false
 
 # Controller base URL. UDM Pro typically serves the Network app at
@@ -64,9 +64,8 @@ unifi_network_dhcp_pxe_creds_op_vault: "Automation"
 unifi_network_dhcp_pxe_creds_username_field: "username"
 unifi_network_dhcp_pxe_creds_password_field: "password"
 
-# PXE values. next_server defaults to the netbootxyz role's lan_ip
-# so they can't drift; boot_filename defaults to the UEFI variant.
-# Override boot_filename if the LAN has legacy BIOS clients that
-# need netboot.xyz.kpxe (modern UEFI is the common case).
-unifi_network_dhcp_pxe_next_server: "{{ truenas_netbootxyz_app_lan_ip | default('') }}"
+# PXE values. next_server has no default — set it in host_vars to the IP
+# serving TFTP (nas-sdg's bond0/br0 alias). boot_filename defaults to the
+# UEFI variant; override with netboot.xyz.kpxe for legacy BIOS clients.
+unifi_network_dhcp_pxe_next_server: ""
 unifi_network_dhcp_pxe_boot_filename: "netboot.xyz.efi"

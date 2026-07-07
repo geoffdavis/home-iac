@@ -48,10 +48,9 @@
              | reject('string') | list | length) == 0
         fail_msg: |
           One of next_server / boot_filename / target_network_names is unset,
-          empty, or wrong type. next_server defaults to
-          truenas_netbootxyz_app_lan_ip; if that's unset, set
-          unifi_network_dhcp_pxe_next_server explicitly in host_vars to the
-          IP serving TFTP. target_network_names must be a non-empty LIST of
+          empty, or wrong type. Set unifi_network_dhcp_pxe_next_server
+          explicitly in host_vars to the IP serving TFTP.
+          target_network_names must be a non-empty LIST of
           string UniFi network display names (e.g. ["Private", "IoT"]) —
           bare strings, dicts/mappings, and lists containing non-string
           items are all rejected to catch common YAML-quoting mistakes
