@@ -91,17 +91,16 @@
             timeout: 900
 
         # -- cloud-init seed --------------------------------------------
-        # REUSE the truenas_freeipa_vm cloud-init template by path — one
-        # source of truth for the in-VM bring-up (netbird repo + packages
-        # + firewalld zone + /etc/hosts overlay patch + key scrub). The
-        # template speaks truenas_freeipa_vm_* var names; the task-level
-        # vars: shim maps this role's namespace onto them for the render.
-        # The _netbird_setup_key / _operator_ssh_pubkey facts it consumes
-        # were set (same names) by preflight.
-        - name: Render cloud-init userdata to an in-memory fact (shared template)
+        # The cloud-init template drives the in-VM bring-up (netbird repo +
+        # packages + firewalld zone + /etc/hosts overlay patch + key scrub).
+        # It still speaks the legacy truenas_freeipa_vm_* var names, so the
+        # task-level vars: shim maps this role's namespace onto them for the
+        # render. The _netbird_setup_key / _operator_ssh_pubkey facts it
+        # consumes were set (same names) by preflight.
+        - name: Render cloud-init userdata to an in-memory fact
           ansible.builtin.set_fact:
             _cloud_init_userdata: "{{ lookup('template',
-              role_path ~ '/../truenas_freeipa_vm/templates/cloud-init-userdata.yaml.j2') }}"
+              role_path ~ '/templates/cloud-init-userdata.yaml.j2') }}"
           vars:
             truenas_freeipa_vm_server_fqdn: "{{ nixos_freeipa_vm_server_fqdn }}"
             truenas_freeipa_vm_netbird_peer_name: "{{ nixos_freeipa_vm_netbird_peer_name }}"
@@ -115,16 +114,15 @@
               instance-id: {{ nixos_freeipa_vm_name }}
               local-hostname: {{ nixos_freeipa_vm_server_fqdn }}
 
-        # Build the NoCloud ISO on the ANSIBLE CONTROLLER with the shared
-        # pycdlib helper. The NixOS host could carry ISO tooling via nix,
-        # but building controller-side keeps one code path for both
-        # backends AND keeps the raw setup key off the wire except inside
-        # the finished ISO (copied 0600, deleted after cloud-init).
+        # Build the NoCloud ISO on the ANSIBLE CONTROLLER with the pycdlib
+        # helper. Building controller-side keeps the raw setup key off the
+        # wire except inside the finished ISO (copied 0600, deleted after
+        # cloud-init).
         - name: Build NoCloud seed ISO on the controller (pycdlib)
           ansible.builtin.command:
             argv:
               - python3
-              - "{{ role_path }}/../truenas_freeipa_vm/files/build_seed_iso.py"
+              - "{{ role_path }}/files/build_seed_iso.py"
             stdin: "{{ {'out_path': _nixos_freeipa_vm_seed_iso_local,
                         'user_data': _cloud_init_userdata,
                         'meta_data': _cloud_init_metadata} | to_json }}"

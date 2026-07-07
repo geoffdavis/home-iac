@@ -19,9 +19,8 @@
       {{ inventory_hostname }} reports distribution
       "{{ ansible_facts['distribution'] | default('<facts not gathered>') }}",
       not NixOS. This role shells out to virsh/qemu-img/zfs and expects
-      the nix-personal virt module's layout (modules/nas/virt.nix). For a
-      TrueNAS host use roles/truenas_freeipa_vm (playbooks/truenas-freeipa-vm.yml)
-      instead.
+      the nix-personal virt module's layout (modules/nas/virt.nix). All fleet
+      hosts run NixOS; if this fails, the host isn't provisioned yet.
 
 # 1. If the operator overrode nixos_freeipa_vm_nic_mac (default null),
 # the value must be a valid colon-separated MAC string. Catch typos here

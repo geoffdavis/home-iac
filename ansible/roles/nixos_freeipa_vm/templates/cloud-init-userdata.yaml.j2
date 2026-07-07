@@ -1,0 +1,168 @@
+#cloud-config
+# Rendered by truenas_freeipa_vm role. Delivered to the VM via a NoCloud
+# seed ISO (volume label = cidata) built on the ansible controller with
+# pycdlib and attached as a CDROM device. Cloud-init runs this on first
+# boot. Pivoted from the Incus `cloud-init.user-data` config key in
+# 2026-05-18 because TrueNAS CE's Incus middleware only supports
+# CONTAINER instance_type; libvirt VMs use the seed-ISO mechanism.
+hostname: {{ truenas_freeipa_vm_server_fqdn }}
+fqdn:     {{ truenas_freeipa_vm_server_fqdn }}
+# NOT setting `manage_etc_hosts: true`: it would write /etc/hosts using
+# cloud-init's view of the instance IP, which is the Incus bridge IP
+# (10.23.117.x), NOT the netbird overlay IP. We need the overlay IP for
+# ipa-server-install's `hostname -i` pre-check. The runcmd below patches
+# /etc/hosts explicitly after `netbird up` exposes the overlay IP.
+
+users:
+  - name: rocky
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+{% if truenas_freeipa_vm_operator_debug_password | default(None) %}
+    # Operator debug password — set ONLY when explicitly provided in
+    # host_vars / role vars (e.g. for a hands-on bring-up). Default is
+    # unset, meaning the rocky user has no password and console / SPICE
+    # login is impossible. Set this if you anticipate needing to log in
+    # via the display when SSH is unreachable (firewalld misconfig after
+    # a botched IPA install, netbird overlay broken, etc.). Pull from 1P,
+    # don't commit literals.
+    lock_passwd: false
+    passwd: "{{ truenas_freeipa_vm_operator_debug_password | password_hash('sha512') }}"
+{% endif %}
+    ssh_authorized_keys:
+      - "{{ _operator_ssh_pubkey }}"
+
+# Gate later cloud-init phases on a usable IPv4 path before they proceed.
+# On Rocky 10 with dual-stack DHCP/RA on this LAN, NetworkManager declares
+# "startup complete" the moment IPv6 RA delivers a default route — several
+# seconds before the IPv4 DHCP lease arrives. cloud-init then runs the
+# `packages` module, dnf resolves repo FQDNs to IPv6 endpoints, and curl
+# fails because the home v6 transit can't reach the package mirror.
+#
+# The argv-list form (`- [cloud-init-per, ..., sh, -c, "<script>"]`)
+# is used instead of a single string because the string form was
+# crashing the bootcmd tmp script with exit 2 in <10 ms on the first
+# attempt. Argv-list form bypasses an extra layer of shell quoting in
+# cloud-init's `shellify()` and is more robust against parsing
+# edge cases regardless of the underlying root cause.
+#
+# Wrapped in `cloud-init-per instance` so the 60s wait fires only on
+# first boot. cloud-init runs `bootcmd` on every boot by default;
+# without the wrapper a future reboot with momentarily-absent IPv4 or
+# DNS would block startup for the full 60s even though the race only
+# matters on the first deploy when `packages:` runs.
+bootcmd:
+  - [cloud-init-per, instance, wait_ipv4_ready,
+     sh, -c, "i=0; while [ \"$i\" -lt 60 ]; do ip -4 route show default | grep -q . && getent hosts pkgs.netbird.io >/dev/null 2>&1 && exit 0; sleep 1; i=$((i+1)); done; echo 'cloud-init bootcmd: IPv4+DNS not ready after 60s' >&2; exit 1"]
+
+# NetBird is NOT in EPEL — distributed from pkgs.netbird.io. cloud-init
+# processes `yum_repos` BEFORE `packages`, so `dnf install netbird` in the
+# package set below resolves successfully.
+yum_repos:
+  # cloud-init's yum_repos schema requires booleans here, not integers
+  # (1 / 0 fails schema validation → cloud-init reports rc=2 "degraded
+  # done", which makes the role's assert-cloud-init-success fail even
+  # though the repo file dnf actually writes is identical).
+  netbird:
+    name: NetBird
+    baseurl: https://pkgs.netbird.io/yum/
+    gpgcheck: true
+    gpgkey: https://pkgs.netbird.io/yum/repodata/repomd.xml.key
+    enabled: true
+
+write_files:
+  # Setup key persists briefly on disk; runcmd deletes immediately after
+  # `netbird up` consumes it. Setup keys are one-use (`type=one-off` in the
+  # netbird dashboard), so the file is cryptographically worthless after
+  # registration — but we still scrub it.
+  - path: /etc/netbird/setup.conf
+    permissions: "0600"
+    owner: root:root
+    content: |
+      NB_SETUP_KEY={{ _netbird_setup_key }}
+      NB_HOSTNAME={{ truenas_freeipa_vm_netbird_peer_name }}
+      NB_MANAGEMENT_URL={{ truenas_freeipa_vm_netbird_management_url }}
+
+  # Security-only unattended patching baseline, enabled in runcmd below so the
+  # VM self-patches from first boot. This is intentionally a duplicate of the
+  # freeipa_autopatch role's templates/automatic.conf.j2 — the role is the
+  # source of truth and additionally layers on a daily netbird upgrade + a
+  # staggered post-patch reboot (run playbooks/freeipa-autopatch.yml during
+  # bring-up). Keep this baseline in sync with that role's automatic.conf.j2.
+  # Reboot is left at its `never` default here; the role's staggered
+  # freeipa-autoreboot.timer owns reboot so the mesh never loses two replicas
+  # at once.
+  - path: /etc/dnf/automatic.conf
+    permissions: "0644"
+    owner: root:root
+    content: |
+      [commands]
+      upgrade_type = security
+      random_sleep = 0
+      download_updates = yes
+      apply_updates = yes
+
+      [emitters]
+      emit_via = stdio
+
+      [base]
+      debuglevel = 1
+
+packages:
+  - epel-release
+  - netbird
+  - freeipa-server
+  - freeipa-server-dns
+  - chrony
+  - qemu-guest-agent
+  - python3
+  # Rocky 10.2 minimized GenericCloud DROPPED firewalld from the base image
+  # (10.0 shipped it) — without these the runcmd wt0-trusted step silently
+  # no-ops and ansible.posix.firewalld fails on the target (python bindings
+  # missing / INVALID_ZONE offline fallback). Bit the ipa-cin bring-up,
+  # 2026-07-06.
+  - firewalld
+  - python3-firewall
+  # ipa-healthcheck: also missing from the 10.2 minimized image; the fleet's
+  # freeipa-healthcheck.yml playbook and ad-hoc verification depend on it.
+  - ipa-healthcheck
+  # dnf-automatic applies security updates unattended; dnf-utils provides
+  # `needs-restarting`, used by the freeipa_autopatch role's staggered-reboot
+  # check. Installed here so new VMs self-patch before the role first runs.
+  - dnf-automatic
+  - dnf-utils
+  # python3 explicitly: needed by the `netbird status | python3 -c ...`
+  # IP extractor in runcmd below. Rocky cloud images include it, but
+  # listing here makes the dependency explicit and protects against
+  # minimal-image variants.
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now chronyd
+  # Turn on security self-patching from first boot (config written above).
+  # The freeipa_autopatch role re-asserts this and adds the netbird-upgrade +
+  # staggered-reboot timers when playbooks/freeipa-autopatch.yml runs.
+  - systemctl enable --now dnf-automatic.timer
+  # Start the netbird daemon BEFORE `netbird up` — `netbird up` talks to the
+  # daemon via /var/run/netbird.sock and will fail without it. The upstream
+  # RPM ships the systemd unit but does NOT enable it on install.
+  - systemctl enable --now netbird
+  - "source /etc/netbird/setup.conf && netbird up --setup-key \"$NB_SETUP_KEY\" --management-url \"$NB_MANAGEMENT_URL\" --hostname \"$NB_HOSTNAME\""
+  # Move the netbird wt0 interface into the firewalld 'trusted' zone now
+  # that the interface exists (after `netbird up` brought it up). Without
+  # this, firewalld's default zone (public, no IPA services allowed) drops
+  # all overlay traffic — including replication LDAP and Kerberos between
+  # IPA replicas. Discovered on the ipa-sct join attempt that was broken
+  # until this was added by hand on both peers. Netbird ACLs already enforce
+  # access control at L3, so OS-level firewall is redundant for overlay
+  # traffic.
+  - firewall-cmd --zone=trusted --add-interface=wt0 --permanent
+  - firewall-cmd --reload
+  # Scrub the one-use setup key from disk (see write_files comment above).
+  - rm -f /etc/netbird/setup.conf
+  # Patch /etc/hosts so the FQDN resolves locally to the OVERLAY IP, not the
+  # bridge IP. Required by ipa-server-install's pre-checks (hostname -i must
+  # return the install IP). Runs after `netbird up` so `netbird status` has
+  # the overlay IP available.
+  - "NB_IP=$(netbird status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"netbirdIp\"].split(\"/\")[0])'); echo \"$NB_IP {{ truenas_freeipa_vm_server_fqdn }} $(hostname -s)\" >> /etc/hosts"
+  # FreeIPA NOT installed by cloud-init — that's the freeipa-install.yml
+  # playbook's job, which runs against this VM via the ipa_replicas group.
