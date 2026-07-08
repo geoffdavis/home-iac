@@ -1,0 +1,11 @@
+# {{ ansible_managed }} — freeipa_metrics role (ugreen-nas-compose)
+[Unit]
+Description=periodic ipa-healthcheck metrics refresh
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec={{ freeipa_metrics_healthcheck_interval }}
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

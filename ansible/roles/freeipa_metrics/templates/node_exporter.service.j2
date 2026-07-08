@@ -1,0 +1,22 @@
+# {{ ansible_managed }} — freeipa_metrics role (ugreen-nas-compose)
+[Unit]
+Description=Prometheus node_exporter (scraped over the netbird overlay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/node_exporter \
+  --collector.textfile.directory={{ freeipa_metrics_textfile_dir }} \
+  --collector.systemd \
+  --web.listen-address=:{{ freeipa_metrics_port }}
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
