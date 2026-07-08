@@ -38,20 +38,23 @@
 # Compare the fields we own against the live record. We only diff the
 # fields in _udm_pf_desired — UniFi may store additional server-side
 # fields (_id, site_id, pfwd_interface) that we neither set nor care
-# about. A matching existing record has all our desired fields equal.
+# about: project the live record down to our keys and compare dicts.
+# (Not `.items() | difference(dict2items)` — tuples never equal
+# {key,value} dicts, which read as permanent drift and a PUT every run;
+# live finding 2026-07-08, same fix as unifi_network_dns_record.)
+# Always set (no `when:`): set_fact persists across loop iterations, so
+# skipping this on state=absent would leak the PREVIOUS item's verdict
+# into this item's debug output.
 - name: "Compute drift — {{ _udm_pf_rule.name }}"
   ansible.builtin.set_fact:
     _udm_pf_needs_update: >-
       {{
+        (_udm_pf_rule.state | default('present')) == 'present' and
         _udm_pf_match | length > 0 and
-        (_udm_pf_desired.items() | list
-         | difference(
-             (_udm_pf_match[0] | dict2items
-              | selectattr('key', 'in', _udm_pf_desired.keys() | list)
-              | list)
-           ) | length) > 0
+        (_udm_pf_match[0] | dict2items
+         | selectattr('key', 'in', _udm_pf_desired.keys() | list)
+         | items2dict) != _udm_pf_desired
       }}
-  when: (_udm_pf_rule.state | default('present')) == 'present'
 
 - name: "Debug — current vs desired — {{ _udm_pf_rule.name }}"
   ansible.builtin.debug:
@@ -80,6 +83,9 @@
   delegate_to: localhost
   become: false
   no_log: true
+  # uri never flags changed on its own; this task only runs when the
+  # rule is missing, so reaching it IS the change.
+  changed_when: true
   when:
     - (_udm_pf_rule.state | default('present')) == 'present'
     - _udm_pf_match | length == 0
@@ -111,6 +117,8 @@
   delegate_to: localhost
   become: false
   no_log: true
+  # Gated on computed drift, so reaching this task IS the change.
+  changed_when: true
   when:
     - (_udm_pf_rule.state | default('present')) == 'present'
     - _udm_pf_match | length > 0
@@ -142,6 +150,8 @@
   delegate_to: localhost
   become: false
   no_log: true
+  # Only runs when a rule exists to remove; reaching it IS the change.
+  changed_when: true
   when:
     - (_udm_pf_rule.state | default('present')) == 'absent'
     - _udm_pf_match | length > 0
