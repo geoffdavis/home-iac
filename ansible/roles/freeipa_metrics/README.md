@@ -20,6 +20,15 @@ VictoriaMetrics hub on nas-sdg (nix-personal#153 Phase 3).
   - `ipa_healthcheck_cert_days_min` — minimum days-to-expiry across all
     checks reporting a `days` kw (the silent-cert-expiry signal)
   - `ipa_healthcheck_{exit_code,parse_ok,last_run_timestamp_seconds,duration_seconds}`
+- **netbird-metrics** (script + oneshot service + 1-min timer): runs
+  `netbird status --json` as root and emits the same five gauges the NAS
+  hosts export (nix-personal `modules/nas/metrics.nix`), so dashboards
+  read one uniform overlay-health signal fleet-wide:
+  `netbird_up`, `netbird_management_connected`,
+  `netbird_signal_connected`, `netbird_peers_total`,
+  `netbird_peers_connected`. The dead-man heartbeat only proves the host
+  has *some* route out; this catches "WAN up, overlay down" — the state
+  that makes a replica unreachable for scrapes and SSH.
 
 ## Reachability / firewall
 

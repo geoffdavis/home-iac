@@ -83,10 +83,30 @@
     - ipa-healthcheck-metrics.timer
   notify: Reload systemd
 
+- name: Install netbird metrics script
+  become: true
+  ansible.builtin.copy:
+    src: netbird_metrics.py
+    dest: /usr/local/bin/netbird-metrics
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install netbird metrics units
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - netbird-metrics.service
+    - netbird-metrics.timer
+  notify: Reload systemd
+
 - name: Flush handlers before enabling units
   ansible.builtin.meta: flush_handlers
 
-- name: Enable and start node_exporter + healthcheck timer
+- name: Enable and start node_exporter + metrics timers
   become: true
   ansible.builtin.systemd:
     name: "{{ item }}"
@@ -95,10 +115,14 @@
   loop:
     - node_exporter.service
     - ipa-healthcheck-metrics.timer
+    - netbird-metrics.timer
 
-- name: Prime the healthcheck metrics once (don't wait for the timer)
+- name: Prime the metrics once (don't wait for the timers)
   become: true
   ansible.builtin.systemd:
-    name: ipa-healthcheck-metrics.service
+    name: "{{ item }}"
     state: started
+  loop:
+    - ipa-healthcheck-metrics.service
+    - netbird-metrics.service
   changed_when: false
