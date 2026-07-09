@@ -1,0 +1,229 @@
+# playbooks/jetkvm-netbird-update.yml — update netbird on the JetKVM OOB
+# consoles (#207).
+#
+# Usage:
+#   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml            # latest release
+#   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml -e netbird_version=0.75.0
+#   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml --limit jetkvm-sdg-01
+#
+# Device constraints (see the oob_kvm inventory comment): no python → only
+# `raw` runs on-device; no sftp-server → the binary travels cat-over-ssh
+# from the control node; busybox wget can't HTTPS → the tarball is fetched
+# on the control node; firmware updates reflash the rootfs → the play
+# restores /etc/init.d/S50netbird from the /userdata pristine copy first.
+#
+# Deliberately NOT /userdata/netbird/apply-update.sh (that stays for
+# manual LAN-side updates): live finding 2026-07-09 — updating OVER THE
+# OVERLAY, a flat-out 37MB pipe saturates the KVM's little SoC, starves
+# the netbird daemon, and the tunnel (carrying the very session running
+# the update) drops; the killed script can strand the device mid-swap.
+# So the play (a) stages the binary in 4MiB dd-seek chunks, each retried
+# — chunk writes are idempotent, a tunnel flap just repeats one chunk;
+# (b) sha256-verifies the staged file on-device; (c) runs the
+# stop/swap/start detached from the ssh session via busybox
+# start-stop-daemon -b (setsid-& raced the session teardown), so losing
+# the tunnel during the restart can't kill the swap; (d) polls until the
+# device is back on the new version. serial: 1 so only one console is
+# mid-update at a time.
+#
+# Single play on purpose: the control-node fetch rides along as delegated
+# tasks (guarded to effectively run once, facts parked on localhost via
+# delegate_facts) so `--limit jetkvm-x` works without remembering to
+# include localhost — the two-play layout broke exactly that way.
+---
+- name: Update netbird on the JetKVM OOB consoles
+  hosts: oob_kvm
+  gather_facts: false
+  serial: 1
+  tasks:
+    # ── control-node half (first serial batch only) ──────────────────────
+    - name: Resolve latest release tag from GitHub
+      when:
+        - netbird_version is not defined
+        - hostvars['localhost'].nb_target is not defined
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/netbirdio/netbird/releases/latest
+        return_content: true
+      register: _latest
+
+    - name: Pin the target version + artifact dir (parked on localhost)
+      when: hostvars['localhost'].nb_target is not defined
+      delegate_to: localhost
+      delegate_facts: true
+      ansible.builtin.set_fact:
+        # Inline-if, not default(): Jinja evaluates default()'s fallback
+        # eagerly, which explodes on the skipped _latest register when
+        # -e netbird_version= is provided (review finding).
+        nb_target: >-
+          {{ netbird_version if netbird_version is defined
+             else (_latest.json.tag_name | regex_replace('^v', '')) }}
+
+    - name: Create the artifact dir
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "/tmp/jetkvm-netbird-{{ hostvars['localhost'].nb_target }}"
+        state: directory
+        mode: "0700"
+      register: _scratch
+
+    - name: Download tarball + checksums (skips when already present)
+      delegate_to: localhost
+      ansible.builtin.get_url:
+        url: "https://github.com/netbirdio/netbird/releases/download/v{{ hostvars['localhost'].nb_target }}/{{ item }}"
+        dest: "{{ _scratch.path }}/{{ item }}"
+        mode: "0600"
+        force: false
+      loop:
+        - "netbird_{{ hostvars['localhost'].nb_target }}_linux_armv6.tar.gz"
+        - "netbird_{{ hostvars['localhost'].nb_target }}_checksums.txt"
+
+    - name: Verify the tarball against the published checksum
+      delegate_to: localhost
+      ansible.builtin.shell:
+        # pipefail is a bashism — pin the interpreter rather than trust
+        # whatever /bin/sh is on the control node (review finding).
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          cd {{ _scratch.path | quote }}
+          grep " netbird_{{ hostvars['localhost'].nb_target }}_linux_armv6.tar.gz$" \
+            "netbird_{{ hostvars['localhost'].nb_target }}_checksums.txt" | shasum -a 256 -c -
+      changed_when: false
+
+    # Plain tar, not ansible.builtin.unarchive: the module requires GNU tar
+    # and refuses macOS bsdtar (live finding); the CLI extracts fine.
+    - name: Extract the netbird binary
+      delegate_to: localhost
+      ansible.builtin.command:
+        cmd: >-
+          tar -xzf netbird_{{ hostvars['localhost'].nb_target }}_linux_armv6.tar.gz netbird
+        chdir: "{{ _scratch.path }}"
+        creates: "{{ _scratch.path }}/netbird"
+
+    # ── device half (raw only from here down) ────────────────────────────
+    # Firmware updates reflash the rootfs — a missing init script means the
+    # last firmware update ate it; restore from the pristine /userdata copy
+    # BEFORE touching the binary so apply-update.sh can restart the service.
+    - name: Restore S50netbird if the rootfs was reflashed
+      ansible.builtin.raw: |
+        if [ ! -f /etc/init.d/S50netbird ]; then
+          cp /userdata/netbird/S50netbird /etc/init.d/S50netbird
+          echo RESTORED
+        else
+          echo PRESENT
+        fi
+      register: _s50
+      changed_when: "'RESTORED' in _s50.stdout"
+
+    - name: Read the currently deployed version
+      ansible.builtin.raw: >-
+        SSL_CERT_FILE=/userdata/netbird/cacert.pem
+        /userdata/netbird/netbird version 2>/dev/null || echo unknown
+      register: _current
+      changed_when: false
+
+    - name: Report version state
+      ansible.builtin.debug:
+        msg: "deployed {{ _current.stdout | trim }} → target {{ hostvars['localhost'].nb_target }}"
+
+    - name: Stage the new binary in retryable 4MiB chunks (dd-seek over ssh)
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      delegate_to: localhost
+      ansible.builtin.shell: |
+        set -eu
+        cd {{ _scratch.path | quote }}
+        rm -rf parts && mkdir parts
+        split -b 4194304 netbird parts/chunk.
+        # Clear any stale staging file: dd conv=notrunc never truncates, so
+        # a larger leftover from an aborted run would keep trailing bytes
+        # and fail the sha256 verify (review finding — and we hit exactly
+        # this stale file live).
+        for try in 1 2 3; do
+          if ssh -o BatchMode=yes -o ConnectTimeout=15 root@{{ ansible_host }} \
+               "rm -f /userdata/netbird/netbird.new"; then
+            break
+          fi
+          [ "$try" = 3 ] && { echo "could not clear stale staging" >&2; exit 1; }
+          sleep 10
+        done
+        i=0
+        for p in parts/chunk.*; do
+          ok=0
+          for try in 1 2 3 4 5; do
+            if ssh -o BatchMode=yes -o ConnectTimeout=15 root@{{ ansible_host }} \
+                 "dd of=/userdata/netbird/netbird.new bs=4194304 seek=$i conv=notrunc 2>/dev/null" < "$p"; then
+              ok=1; break
+            fi
+            echo "chunk $i attempt $try failed; backing off" >&2
+            sleep 15
+          done
+          [ "$ok" = 1 ] || { echo "chunk $i failed after retries" >&2; exit 1; }
+          i=$((i+1))
+        done
+        echo "staged $i chunks"
+      register: _stage
+      changed_when: true
+
+    - name: Verify the staged binary's checksum on-device
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      ansible.builtin.raw: >-
+        sha256sum /userdata/netbird/netbird.new
+      register: _staged_sum
+      changed_when: false
+      failed_when: >-
+        (lookup('pipe', 'shasum -a 256 ' + ((_scratch.path + '/netbird') | quote))
+         | split | first) not in _staged_sum.stdout
+
+    # Detached swap: the restart drops the overlay tunnel this very session
+    # came in on, so the swap must survive the session. `setsid ... &` from
+    # a raw one-liner proved flaky (the child raced the session teardown and
+    # never spawned — live finding); busybox start-stop-daemon -b is the
+    # reliable double-forking detach. The script is written to a file first
+    # so no shell-quoting survives the ssh hop.
+    - name: Stage the swap script
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      ansible.builtin.raw: |
+        cd /userdata/netbird
+        chmod +x netbird.new
+        ./netbird.new version >/dev/null 2>&1 || { echo "staged binary does not run"; exit 1; }
+        printf '%s\n' \
+          '#!/bin/sh' \
+          'exec > /userdata/netbird/update.log 2>&1' \
+          'cd /userdata/netbird' \
+          '/etc/init.d/S50netbird stop' \
+          '[ -f netbird ] && mv netbird netbird.prev' \
+          'mv netbird.new netbird' \
+          '/etc/init.d/S50netbird start' \
+          > do-swap.sh
+        chmod +x do-swap.sh
+        echo "swap staged"
+      register: _swapstage
+      changed_when: "'swap staged' in _swapstage.stdout"
+      failed_when: "'swap staged' not in _swapstage.stdout"
+
+    - name: Swap binaries and restart netbird (detached from this session)
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      ansible.builtin.raw: |
+        start-stop-daemon -S -b -x /userdata/netbird/do-swap.sh && echo "swap dispatched"
+      register: _swap
+      changed_when: "'swap dispatched' in _swap.stdout"
+      failed_when: "'swap dispatched' not in _swap.stdout"
+
+    - name: Wait for the device to return on the new version
+      ansible.builtin.raw: |
+        export SSL_CERT_FILE=/userdata/netbird/cacert.pem
+        v=$(/userdata/netbird/netbird version)
+        s=$(/userdata/netbird/netbird status --daemon-addr unix:///var/run/netbird.sock 2>/dev/null | grep "Management:")
+        echo "version=$v ${s:-Management: unknown}"
+      register: _verify
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: >-
+        hostvars['localhost'].nb_target in _verify.stdout
+        and 'Connected' in _verify.stdout
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "{{ _verify.stdout | trim }}"
