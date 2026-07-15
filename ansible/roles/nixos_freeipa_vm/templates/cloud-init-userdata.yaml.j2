@@ -112,6 +112,13 @@ packages:
   - freeipa-server-dns
   - chrony
   - qemu-guest-agent
+  # acpid: the Rocky 10 minimized image ships NO ACPI power-button handler, so
+  # a `virsh shutdown` (ACPI) is silently ignored — libvirt-guests on the KVM
+  # host then hangs the full SHUTDOWN_TIMEOUT (300s) and force-destroys the
+  # replica, risking dirsrv/BDB corruption and stalling every host reboot by
+  # ~5 min (hit on ipa-cin, 2026-07-15). acpid makes the guest act on the
+  # power button so host reboots shut the replica down cleanly.
+  - acpid
   - python3
   # Rocky 10.2 minimized GenericCloud DROPPED firewalld from the base image
   # (10.0 shipped it) — without these the runcmd wt0-trusted step silently
@@ -135,6 +142,7 @@ packages:
 
 runcmd:
   - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now acpid
   - systemctl enable --now chronyd
   # Turn on security self-patching from first boot (config written above).
   # The freeipa_autopatch role re-asserts this and adds the netbird-upgrade +
