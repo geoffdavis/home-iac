@@ -81,14 +81,32 @@
     - name: Verify the tarball against the published checksum
       delegate_to: localhost
       ansible.builtin.shell:
-        # pipefail is a bashism — pin the interpreter rather than trust
-        # whatever /bin/sh is on the control node (review finding).
-        executable: /bin/bash
+        # POSIX sh, no `executable:` pin. This used to `set -o pipefail` and
+        # pin /bin/bash to get it — which silently made the play unrunnable
+        # from a NixOS control node, where /bin holds ONLY /bin/sh and bash
+        # lives at an unstable profile path (live finding 2026-08-14,
+        # birdrock: "No such file or directory: b'/bin/bash'").
+        # Comparing the two hashes explicitly needs no pipefail: an empty
+        # `expected` catches a missing/renamed checksum line, which is the
+        # failure pipefail was guarding against. shasum -a 256 is used
+        # rather than sha256sum because macOS has only the former.
         cmd: |
-          set -euo pipefail
+          set -eu
           cd {{ _scratch.path | quote }}
-          grep " netbird_{{ hostvars['localhost'].nb_target }}_linux_armv6.tar.gz$" \
-            "netbird_{{ hostvars['localhost'].nb_target }}_checksums.txt" | shasum -a 256 -c -
+          tarball="netbird_{{ hostvars['localhost'].nb_target }}_linux_armv6.tar.gz"
+          expected=$(grep " ${tarball}$" \
+            "netbird_{{ hostvars['localhost'].nb_target }}_checksums.txt" \
+            | cut -d' ' -f1)
+          if [ -z "$expected" ]; then
+            echo "no checksum line for ${tarball}" >&2
+            exit 1
+          fi
+          actual=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
+          if [ "$expected" != "$actual" ]; then
+            echo "checksum mismatch for ${tarball}: $expected != $actual" >&2
+            exit 1
+          fi
+          echo "${tarball}: OK"
       changed_when: false
 
     # Plain tar, not ansible.builtin.unarchive: the module requires GNU tar
