@@ -385,16 +385,36 @@ it cannot compose the chord either ([jetkvm/kvm#211][k211],
 [#401][k401]). Macros can — `KeyboardMacroStep` carries `Keys` and
 `Modifiers` as separate fields, so modifiers are genuinely held:
 
+**Install this exact set on every unit** (`jetkvm-sdg-02` and `jetkvm-sct-01`
+carry it as of 2026-08-14; `jetkvm-cin-01` is pending — it is offline with
+`nas-cin`):
+
 ```json
 "keyboard_macros": [
-  {"id": "vt2-console", "name": "Console (Ctrl+Alt+F2)",
-   "steps": [{"keys": ["F2"], "modifiers": ["ControlLeft", "AltLeft"], "delay": 50}],
-   "sortOrder": 1},
-  {"id": "vt1-wallboard", "name": "Wallboard (Ctrl+Alt+F1)",
+  {"id": "vt1", "name": "F1 - VT1 (health dash)",
    "steps": [{"keys": ["F1"], "modifiers": ["ControlLeft", "AltLeft"], "delay": 50}],
-   "sortOrder": 2}
+   "sortOrder": 1},
+  {"id": "vt2", "name": "F2 - VT2 (btop)",
+   "steps": [{"keys": ["F2"], "modifiers": ["ControlLeft", "AltLeft"], "delay": 50}],
+   "sortOrder": 2},
+  {"id": "vt3", "name": "F3 - VT3 (LOGIN)",
+   "steps": [{"keys": ["F3"], "modifiers": ["ControlLeft", "AltLeft"], "delay": 50}],
+   "sortOrder": 3}
 ]
 ```
+
+> [!warning] Name macros after the **VT**, never after what is currently on it
+> The first set installed on `jetkvm-sdg-02` was labelled `Console (Ctrl+Alt+F2)`
+> and `Wallboard (Ctrl+Alt+F1)`. Both went stale within hours when that host
+> moved from a Grafana kiosk to `my.consoleDashboard`: "Wallboard" pointed at a
+> TUI health dashboard, and — far worse — **"Console" pointed at btop while the
+> actual login prompt had moved to tty3.** An operator reaching for "Console" in
+> an emergency would have got a resource monitor.
+>
+> VT numbers are stable; what runs on them is not. `F3 - VT3 (LOGIN)` stays true
+> on a host with console dashboards (tty1 health, tty2 btop, tty3+ getty) and on
+> a host with none (every VT is a getty, so F3 is still a login). Include all
+> three even where only one is currently interesting.
 
 Key names follow the browser `KeyboardEvent.code` convention
 (`ui/src/keyboardMappings.ts`). Limits: 25 macros, 10 steps each, 10 keys per
@@ -435,6 +455,7 @@ step, delay clamped to 50–2000 ms. Patch them into
 | `sh: /usr/libexec/sftp-server: not found` / `scp: Connection closed` | no sftp-server; `scp` cannot work, use `cat \| ssh 'cat >'` |
 | Transfer "succeeded" but the file is absent or short | exit code masked by a trailing `echo` or a pipe into `tail`; check size + sha256 on-device |
 | Progress check reports 0 bytes on a healthy transfer | no `stat` on the device; `stat -c%s \|\| echo 0` masks rc 127. Use `ls -l` |
+| Macro named for what's on the VT, not the VT | labels go stale when the host's layout changes; "Console" pointed at btop after nas-sdg moved to console dashboards. Name them `Fn - VTn` |
 | A tool "seems missing" but is there | busybox applets are not GNU — a GNU-only flag or an empty match looks like absence. `busybox --list` is the authority. `strings` exists; `stat` genuinely does not |
 | Play dies at the checksum task with `/bin/bash: No such file or directory` | control node is NixOS, which has only `/bin/sh`. Fixed — the task is POSIX now; don't reintroduce an `executable:` pin |
 | `Host key verification failed` / `ssh_askpass: exec()` from the play | the overlay FQDN is untrusted even if the LAN IP is; compare fingerprints, then `ssh-keyscan` it |
