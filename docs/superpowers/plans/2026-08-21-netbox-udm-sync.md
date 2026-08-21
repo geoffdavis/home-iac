@@ -1,0 +1,187 @@
+# NetBox → UDM DNS/DHCP Sync Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Make NetBox the authored source of truth for UDM static DNS
+records and static IP reservations, replacing `unifi_network_dns_record`'s
+`host_vars`-driven records and the current 100%-manual reservation process,
+with an idempotent scheduled sync — running from `home-iac`, not
+`ugreen-nas-compose`, per the repo-retirement decision in personal-notes:
+"Agent Access and Deploy Coordination.md" section 6.
+
+**Architecture:** Same as originally scoped against `ugreen-nas-compose`
+(see geoffdavis/ugreen-nas-compose#250 and its superseded spec/plan, PR
+#251) — `unifi_network_dns_record` sourced from NetBox instead of
+`host_vars`, a new role for IP reservations, one-way NetBox → UDM sync. The
+only change from that original scope is **where it runs**, and the new
+Task 1 prerequisite: the Ansible roles have to exist in this repo before
+anything else here makes sense.
+
+**Tech Stack:** Ansible (once migrated — see Task 1), NetBox REST API
+(token auth), UniFi UDM Pro REST API (cookie+CSRF, existing pattern from
+the roles being migrated), 1Password (`op run`, this repo's existing
+convention), pytest.
+
+**Spec:** `docs/superpowers/specs/2026-08-21-netbox-udm-sync-design.md`
+
+**Scope note:** This repo has no Ansible in it today — only OpenTofu. Task
+1 (migrating the live roles from `ugreen-nas-compose`) is a hard
+prerequisite for every task after it and is itself a separate, real piece
+of work — don't treat it as a formality.
+
+---
+
+## Pre-flight facts to verify before Task 2
+
+- Which NetBox DNS plugin (if any) Phase 1 (geoffdavis/nix-personal#542)
+  actually installs, and its API shape. See spec Open Questions.
+- The UDM's DHCP fixed-reservation API endpoint and payload shape —
+  neither existing role touches reservations today; verify live.
+- Whether this repo's OpenTofu-era tooling (`Taskfile.yml`,
+  `.pre-commit-config.yaml`) needs new entries for Ansible (lint hooks,
+  `task` targets) as part of Task 1, or whether that's simple enough to
+  fold into Task 1 directly.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+| --- | --- |
+| `ansible/` *(create — new top-level dir, Task 1)* | Migrated from `ugreen-nas-compose`: `roles/{nixos_freeipa_vm,freeipa_autopatch,freeipa_metrics,freeipa_rsyslog,unifi_network_dns_record,unifi_network_dhcp_pxe,unifi_network_port_forward}/`, `playbooks/`, `inventory.yml`, `host_vars/` |
+| `ansible/roles/unifi_network_dns_record/tasks/main.yml` *(modify, post-migration)* | Replace `host_vars`-sourced `records` with a NetBox API query task |
+| `ansible/roles/unifi_network_dns_record/defaults/main.yml` *(modify)* | Add `unifi_network_dns_record_netbox_*` vars; keep `unifi_network_dns_record_records` as a temporary escape hatch |
+| `ansible/roles/unifi_network_ip_reservation/` *(create)* | New role: NetBox `status=dhcp` IPs → UDM DHCP fixed reservations |
+| `ansible/roles/netbox_import_udm_state/` *(create, one-shot)* | Backfill: UDM → NetBox, run once |
+| `ansible/playbooks/unifi-network.yml` *(modify)* | Add the new reservation role |
+| `ansible/playbooks/netbox-import.yml` *(create, one-shot)* | Wraps the backfill role |
+| `.pre-commit-config.yaml` *(modify)* | Add ansible-lint alongside the existing OpenTofu hooks |
+| `Taskfile.yml` *(modify)* | Add `ansible:*` targets alongside the existing `init`/`plan`/`apply` |
+| `README.md` *(modify)* | Update "What it manages" to include the FreeIPA/UDM half |
+| systemd timer or CI cron *(create, location TBD)* | Scheduled sync |
+
+---
+
+### Task 1: Migrate the live Ansible roles from `ugreen-nas-compose`
+
+**Files:** Create `ansible/` (see File Structure); modify
+`.pre-commit-config.yaml`, `Taskfile.yml`, `README.md`
+
+**This is the prerequisite for everything else in this plan.** Treat it as
+its own reviewable unit — a straight migration commit, with the NetBox
+rewrite (Task 3+) as a clean follow-on, not mixed into the same change.
+
+- [ ] **Step 1: Copy `ansible/roles/{nixos_freeipa_vm,freeipa_autopatch,
+  freeipa_metrics,freeipa_rsyslog,unifi_network_dns_record,
+  unifi_network_dhcp_pxe,unifi_network_port_forward}/`** from
+  `ugreen-nas-compose` verbatim — no changes yet. Preserve git blame if
+  practical (e.g. `git subtree`/`git format-patch` rather than a raw
+  copy, if history continuity matters here).
+- [ ] **Step 2: Copy `ansible/playbooks/`, `ansible/inventory.yml`, and
+  the relevant `host_vars/`** — only what these seven roles need, not
+  `ugreen-nas-compose`'s full inventory (which also covers the now-dropped
+  `truenas_*`/orphaned roles per geoffdavis/ugreen-nas-compose#249 — don't
+  bring those over even by accident).
+- [ ] **Step 3: Confirm the 1Password items these roles reference**
+  (`UniFi UDM Pro (ansible)`, the FreeIPA credentials) are reachable from
+  this repo's existing `op run` convention — same 1Password vault, just a
+  new consumer repo.
+- [ ] **Step 4: Add ansible-lint to `.pre-commit-config.yaml`**, matching
+  whatever config `ugreen-nas-compose` used, adapted to this repo's
+  pre-commit conventions.
+- [ ] **Step 5: Add `task ansible:*` targets to `Taskfile.yml`** —
+  `ansible:check` (lint/syntax-check), `ansible:run` (the playbooks) —
+  matching this repo's existing `task plan`/`task apply` naming spirit.
+- [ ] **Step 6: Run every migrated playbook in check/dry-run mode**
+  against the real FreeIPA VM and UDM, confirm zero unexpected diffs —
+  this proves the migration didn't silently change behavior before Task 2
+  even starts.
+- [ ] **Step 7: Update `README.md`**'s "What it manages" section to
+  include FreeIPA replica management and UDM integration alongside the
+  existing S3/IAM description.
+- [ ] **Step 8: Commit as its own PR**, separate from the NetBox-rewrite
+  work that follows.
+
+### Task 2: One-shot backfill — import UDM state into NetBox (Gate G2)
+
+**Files:** Create `ansible/roles/netbox_import_udm_state/`,
+`ansible/playbooks/netbox-import.yml`
+
+Blocked on Task 1 and on geoffdavis/nix-personal#542 (NetBox running).
+
+- [ ] **Step 1: GET the UDM's current static-DNS list** (reuse
+  `unifi_network_dns_record`'s v2 endpoint and auth, now migrated here).
+- [ ] **Step 2: For each record, create or update the matching NetBox
+  object** (per the spec's DNS-plugin decision).
+- [ ] **Step 3: GET known static-ish addresses**, seeded from the
+  documented low addresses in section 5's pacificbeach data point, cross-
+  checked against the UDM's actual DHCP lease/reservation state.
+- [ ] **Step 4: Spot-check a sample in the NetBox UI against the UDM UI.**
+- [ ] **Step 5: Commit.**
+
+### Task 3: Rewrite `unifi_network_dns_record` to source from NetBox
+
+**Files:** Modify `ansible/roles/unifi_network_dns_record/tasks/main.yml`,
+`defaults/main.yml`, `README.md`
+
+- [ ] **Step 1: Add NetBox connection vars** to `defaults/main.yml`
+  (URL, 1Password creds item, and a temporary
+  `unifi_network_dns_record_records` escape hatch — same pattern as the
+  original ugreen-nas-compose-scoped plan).
+- [ ] **Step 2: Add the NetBox query task**, gated by the escape hatch.
+- [ ] **Step 3: Transform the NetBox response into the role's existing
+  record-dict shape.**
+- [ ] **Step 4: `--check` against a backfilled NetBox, confirm zero
+  diffs (Gate G3).**
+- [ ] **Step 5: Update the README.**
+- [ ] **Step 6: Commit.**
+
+### Task 4: First real NetBox-sourced write (Gate G4)
+
+Same procedure as the original plan: change one low-risk record in
+NetBox, sync for real, verify with `dig`, revert and confirm the revert
+syncs cleanly too.
+
+- [ ] **Step 1–4** as above.
+
+### Task 5: New role — NetBox IP reservations → UDM (Gate G5)
+
+**Files:** Create `ansible/roles/unifi_network_ip_reservation/`; modify
+`ansible/playbooks/unifi-network.yml`
+
+- [ ] **Step 1: Write `defaults/main.yml`.**
+- [ ] **Step 2: Write the NetBox query task** — resolve the MAC/interface
+  association question from the spec's Design section before the
+  transform.
+- [ ] **Step 3: Write the UDM-side GET → diff → apply task** once the
+  DHCP-reservation endpoint is confirmed live.
+- [ ] **Step 4: `--check` dry run against a known-static address.**
+- [ ] **Step 5: Real run for a genuinely new reservation.**
+- [ ] **Step 6: Add the role to `unifi-network.yml`.**
+- [ ] **Step 7: Write the README.**
+- [ ] **Step 8: Commit.**
+
+### Task 6: Remove the escape hatch
+
+- [ ] Confirm no `host_vars/*.yml` still sets
+  `unifi_network_dns_record_records`, remove the var and the
+  short-circuit, commit.
+
+### Task 7: Schedule the sync (Gate G6)
+
+- [ ] Wire up a systemd timer or CI cron running
+  `ansible/playbooks/unifi-network.yml` on an hourly-or-so interval.
+  Update the operator runbook: DNS/reservation edits happen in NetBox now,
+  not the UDM UI and not `host_vars`. Commit.
+
+---
+
+## Definition of done
+
+- [ ] Task 1's migration merged as its own reviewable unit, verified
+  behavior-identical to `ugreen-nas-compose` before any rewrite started.
+- [ ] All gates G2–G6 passed.
+- [ ] Escape hatch removed (Task 6).
+- [ ] Sync runs on a schedule (Task 7).
+- [ ] `README.md` reflects the repo's real, two-platform scope.
+- [ ] Lint passes (OpenTofu + the new ansible-lint hook).
