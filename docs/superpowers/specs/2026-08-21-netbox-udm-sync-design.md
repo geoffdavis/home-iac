@@ -22,11 +22,16 @@ shrinking single-purpose repo. This document is that redirect.
 **Hard dependency, not yet done:** the actual Ansible roles
 (`unifi_network_dns_record`, `unifi_network_dhcp_pxe`,
 `unifi_network_port_forward`, and the four FreeIPA in-VM roles) do not
-exist in this repo yet — only Terraform does today. Migrating them here is
-separate, tracked work (see the companion issue for that migration) and is
-a prerequisite for Task 1 of the implementation plan. This spec describes
-the sync design assuming that migration has landed; it does not design the
-migration itself.
+exist in this repo yet — only Terraform does today. **Migrating them here
+is Task 1 of the implementation plan itself** — not separate,
+not-yet-tracked work elsewhere. (Caught in review: an earlier draft of
+this paragraph said the migration was "separate, tracked work" pointing
+at "the companion issue for that migration," but no such issue exists —
+the plan already scopes it as its own Task 1. Corrected here to match.)
+Everything from Task 2 onward in the plan assumes Task 1 has landed and
+been verified behavior-identical to the `ugreen-nas-compose` originals;
+this spec describes the sync design on top of that, not the migration
+mechanics themselves.
 
 NetBox itself (the container, Phase 1) is `nix-personal` work
 (geoffdavis/nix-personal#542) and is a separate dependency, unaffected by
@@ -79,8 +84,9 @@ relocating a role that already worked.
   not merged.
 - **Phase 3 (Cilium/`external-dns` reconciliation) is not this repo's
   work.** Tracked separately in `pi-talos-home-ops`.
-- **Designing the ugreen-nas-compose → home-iac Ansible migration itself**
-  — that's the companion issue's job, not this spec's.
+- **The detailed mechanics of the ugreen-nas-compose → home-iac Ansible
+  migration** (Task 1 of the plan) — this spec assumes it's landed and
+  verified; it doesn't re-derive how to do the migration itself.
 - **Self-service reservation requests** are out of scope. NetBox stays
   operator-authored for now.
 
@@ -125,20 +131,49 @@ comes from**: today it's `host_vars`; after this spec, it's NetBox.
 
 ### Sync direction and idempotency
 
-One direction only: **NetBox → UDM.**
+One direction only: **NetBox → UDM.** But the comparison that drives it
+must be a **full, symmetric set comparison**, not a one-directional walk
+over NetBox's desired list — caught in review: the existing
+`unifi_network_dns_record` role's `reconcile_one.yml` only ever iterates
+the *desired* records and PUTs the ones that differ, so a role that keeps
+that shape and merely swaps `host_vars` for a NetBox query would never
+notice a UDM record that NetBox doesn't know about at all — neither a gap
+in the Phase 1 backfill (which would make G3's "zero diff" claim false
+even when it reports clean) nor a record legitimately deleted from NetBox
+later (which would then never actually stop being pushed... except it
+already isn't being pushed, it just silently stays live forever, since
+nothing ever looks at it). Concretely:
 
-1. Read desired state from NetBox's REST API.
-2. GET current state from the UDM (reusing the existing role's endpoint
-   and auth flow).
-3. Diff. Apply only records that differ.
-4. **Never read the UDM to update NetBox.** A UDM record with no NetBox
-   counterpart is drift: log it loudly rather than deleting it silently —
-   it might be a Cilium/`external-dns` write (Phase 3's territory, not
-   this phase's).
+1. Build set A: every key+record_type NetBox says should exist (desired
+   state).
+2. Build set B: every key+record_type currently on the UDM, **within the
+   zone this sync manages** — filtered by the ownership check below
+   *before* anything else touches it.
+3. **Compare A and B as full sets, not just walk A:**
+   - In A, not in B → create.
+   - In both, values differ → update.
+   - In both, values match → no-op.
+   - **In B, not in A → this is the case the one-directional walk misses
+     entirely.** Log it loudly (still never auto-delete — that stance is
+     unchanged) but the comparison itself must actually run and be part
+     of what a `--check` reports, so G3's zero-diff gate is checking the
+     whole set, not just NetBox's half of it. Without this, G3 can pass
+     on an incomplete backfill and nobody would know.
 
-**Ownership filter:** skip any UDM record carrying `external-dns`'s
-ownership TXT marker (`pi-talos-home-ops`) — this phase manages the
-*static* half of the zone, not the Kubernetes-originated half.
+**Ownership filter, and where it actually has to live:** skip any UDM
+record carrying `external-dns`'s ownership TXT marker
+(`pi-talos-home-ops`) when building set B in step 2 above — this phase
+manages the *static* half of the zone, not the Kubernetes-originated half.
+**This has to be real code, not just a stated intent:** `reconcile_one.yml`
+today selects a record purely by `key` + `record_type`, with no awareness
+of TXT ownership siblings at all. If NetBox ever holds a record with the
+same key+type as something `external-dns` manages, the reconciler as
+currently structured would happily overwrite a live Kubernetes-owned DNS
+record. Task 3 of the plan must add an explicit step that queries the
+UDM (or wherever the TXT markers are visible) for `external-dns`-owned
+names, builds an exclusion set from them, and applies that exclusion when
+building set B — before the record-selection logic in `reconcile_one.yml`
+ever runs, not as an afterthought bolted onto it.
 
 ### Roles
 
@@ -158,35 +193,52 @@ ownership TXT marker (`pi-talos-home-ops`) — this phase manages the
 - UniFi UDM: same 1Password item this role already uses today in
   `ugreen-nas-compose`, no new UDM-side credential — just a new consumer
   once the role moves.
-- NetBox: new API token, scoped read-only if NetBox's permission model
-  supports it, its own 1Password item.
+- NetBox, **two separate tokens, not one:**
+  - **Ongoing sync** (Task 3 onward): read-only, if NetBox's permission
+    model supports it — this token only ever queries desired state.
+  - **One-time backfill** (Task 2, `netbox_import_udm_state`): **must be
+    write-scoped.** Caught in review: the backfill role's whole job is
+    creating/updating NetBox objects from what it reads off the UDM, so a
+    read-only token can't do it — an earlier draft of this spec only
+    specified the read-only sync token and never gave the backfill
+    anything capable of writing. Store as its own 1Password item, used
+    only for the one-time (or manually re-run) import, not the scheduled
+    sync.
 
 ### Schedule
 
 A systemd timer or CI cron — match whatever this repo's Ansible tooling
-ends up using post-migration (decided by the migration issue, not here).
+ends up using once Task 1's migration lands (that task decides the
+convention; not asserted here).
 
-### Phase 1 import (dependency, not this repo's task)
+### Phase 1 import
 
 Before this repo's sync role can run meaningfully, NetBox needs to be
 seeded with the UDM's *current* static-DNS records and any de-facto static
-reservations. One-time, reads-only-from-UDM. Belongs with the NetBox
-hosting work (geoffdavis/nix-personal#542) or as the first task of this
-spec's implementation plan.
+reservations. One-time, reads-from-UDM/writes-to-NetBox (see Credentials
+above for why that direction needs its own token). This is Task 2 of the
+implementation plan, blocked on Task 1 (the Ansible migration) and on
+geoffdavis/nix-personal#542 (NetBox actually running).
 
 ## Migration plan (high level)
 
-1. **G0 — prerequisite.** The Ansible-roles migration (companion issue)
-   has landed: `unifi_network_dns_record`, `unifi_network_dhcp_pxe`,
+1. **G0 — prerequisite.** Plan Task 1 (the Ansible-roles migration) has
+   landed: `unifi_network_dns_record`, `unifi_network_dhcp_pxe`,
    `unifi_network_port_forward` exist in this repo, unchanged from
    `ugreen-nas-compose`, and run successfully from here.
 2. **G1 — NetBox reachable and importable.** `nix-personal#542` deployed;
    confirm reachability; resolve the DNS-plugin question.
-3. **G2 — Backfill.** Import script populates NetBox from the UDM's
-   current static-DNS records and known static-ish reservations.
-   Spot-check against the UDM UI.
-4. **G3 — `unifi_network_dns_record` rewritten, dry-run clean.** `--check`
-   produces zero diffs against the UDM's current state.
+3. **G2 — Backfill.** Import script (using the write-scoped token —
+   Credentials) populates NetBox from the UDM's current static-DNS
+   records and known static-ish reservations. Spot-check against the UDM
+   UI.
+4. **G3 — `unifi_network_dns_record` rewritten, dry-run clean — proven,
+   not assumed.** `--check` produces zero diffs against the UDM's current
+   state, **using the full symmetric-set comparison from Design** (both
+   directions checked, not just NetBox's desired list walked forward) —
+   a zero-diff result under the old one-directional walk could pass on an
+   incomplete backfill without anyone knowing; this gate only means
+   something once the comparison it's checking is actually complete.
 5. **G4 — First real write.** One DNS record changed in NetBox, synced,
    verified with `dig`.
 6. **G5 — `unifi_network_ip_reservation` built and exercised.** One new
@@ -199,8 +251,9 @@ spec's implementation plan.
 |---|---|---|
 | Migration (G0) lands the roles but with subtle drift from `ugreen-nas-compose`'s originals | Medium | Diff the migrated role files against the source repo before G0 is called done |
 | DNS plugin choice turns out unmaintained/incompatible | Medium | Resolved as G1, before the sync role is written against it |
-| Backfill (G2) misses records, so G3's dry-run isn't actually clean | High | G3's explicit zero-diff gate |
-| Sync silently deletes a Cilium/`external-dns`-owned record | High | Ownership-TXT filter in Design |
+| Backfill (G2) misses records, and the old one-directional G3 check wouldn't have caught it | High | Fixed by the full symmetric-set comparison (Design) — G3 now checks both directions, not just NetBox's list |
+| Sync overwrites a Cilium/`external-dns`-owned record because the ownership filter was only ever asserted, not implemented in `reconcile_one.yml`'s actual selection logic | High | Design now specifies exactly where the filter has to be wired in, and plan Task 3 makes it an explicit step, not an afterthought |
+| Backfill (Task 2) has no credential capable of writing to NetBox | High (would block G2 entirely) | Fixed by the separate write-scoped backfill token (Credentials) |
 | Two-way drift after cutover | Medium, ongoing | Sync overwrites on next scheduled run (NetBox wins) |
 
 ## Open questions
@@ -220,7 +273,8 @@ spec's implementation plan.
 
 - Phase 1 (NetBox hosting) — `nix-personal#542`.
 - Phase 3 (Cilium/`external-dns` reconciliation) — `pi-talos-home-ops`.
-- The Ansible-roles migration itself — companion issue.
+- The detailed mechanics of the Ansible-roles migration — plan Task 1
+  covers execution; this spec assumes it's done.
 - `ugreen-nas-compose`'s archival, once empty — section 6's job, not this
   spec's.
 

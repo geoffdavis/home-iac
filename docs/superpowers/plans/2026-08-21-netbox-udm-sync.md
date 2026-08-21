@@ -109,15 +109,23 @@ rewrite (Task 3+) as a clean follow-on, not mixed into the same change.
 
 Blocked on Task 1 and on geoffdavis/nix-personal#542 (NetBox running).
 
-- [ ] **Step 1: GET the UDM's current static-DNS list** (reuse
+- [ ] **Step 1: Create a write-scoped NetBox API token**, its own
+  1Password item, separate from the read-only token Task 3 uses for the
+  ongoing sync. **Caught in review: this role creates/updates NetBox
+  objects — a read-only token can't do its job**, and an earlier draft of
+  this plan only ever specified a read-only NetBox credential anywhere in
+  the design. Don't reuse or upgrade the ongoing-sync token's scope;
+  keep them separate so the scheduled sync never holds write access.
+- [ ] **Step 2: GET the UDM's current static-DNS list** (reuse
   `unifi_network_dns_record`'s v2 endpoint and auth, now migrated here).
-- [ ] **Step 2: For each record, create or update the matching NetBox
-  object** (per the spec's DNS-plugin decision).
-- [ ] **Step 3: GET known static-ish addresses**, seeded from the
+- [ ] **Step 3: For each record, create or update the matching NetBox
+  object** (per the spec's DNS-plugin decision), using Step 1's
+  write-scoped token.
+- [ ] **Step 4: GET known static-ish addresses**, seeded from the
   documented low addresses in section 5's pacificbeach data point, cross-
   checked against the UDM's actual DHCP lease/reservation state.
-- [ ] **Step 4: Spot-check a sample in the NetBox UI against the UDM UI.**
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Spot-check a sample in the NetBox UI against the UDM UI.**
+- [ ] **Step 6: Commit.**
 
 ### Task 3: Rewrite `unifi_network_dns_record` to source from NetBox
 
@@ -125,16 +133,40 @@ Blocked on Task 1 and on geoffdavis/nix-personal#542 (NetBox running).
 `defaults/main.yml`, `README.md`
 
 - [ ] **Step 1: Add NetBox connection vars** to `defaults/main.yml`
-  (URL, 1Password creds item, and a temporary
-  `unifi_network_dns_record_records` escape hatch — same pattern as the
-  original ugreen-nas-compose-scoped plan).
-- [ ] **Step 2: Add the NetBox query task**, gated by the escape hatch.
-- [ ] **Step 3: Transform the NetBox response into the role's existing
-  record-dict shape.**
-- [ ] **Step 4: `--check` against a backfilled NetBox, confirm zero
-  diffs (Gate G3).**
-- [ ] **Step 5: Update the README.**
-- [ ] **Step 6: Commit.**
+  (URL, read-only 1Password creds item — separate from Task 2's
+  write-scoped one — and a temporary `unifi_network_dns_record_records`
+  escape hatch — same pattern as the original ugreen-nas-compose-scoped
+  plan).
+- [ ] **Step 2: Add the NetBox query task**, gated by the escape hatch —
+  this is set A from the spec's Design (desired state).
+- [ ] **Step 3: Add the `external-dns` ownership-exclusion query.**
+  **This did not exist in the original draft of this plan and is not
+  optional** — caught in review: without it, this role can overwrite a
+  live Kubernetes-owned DNS record the moment NetBox happens to hold a
+  record with the same key+type. Query the UDM (or wherever the TXT
+  ownership markers are actually visible — confirm at implementation
+  time) for names owned by `external-dns`, build an exclusion set.
+- [ ] **Step 4: Add the full-UDM-state query**, filtered by Step 3's
+  exclusion set — this is set B from the spec's Design.
+- [ ] **Step 5: Modify `reconcile_one.yml`'s selection logic** to operate
+  on the A/B comparison from the spec (create / update / no-op / log-only
+  for B-not-in-A), not the existing walk-only-the-desired-list shape.
+  This is a real behavior change to existing, working code — review it
+  as carefully as new code, not as a mechanical rename.
+- [ ] **Step 6: Transform the NetBox response into the role's existing
+  record-dict shape** for the create/update cases.
+- [ ] **Step 7: `--check` against a backfilled NetBox, confirm zero
+  diffs (Gate G3) — using the full A/B comparison from Steps 3-5, not
+  just "does NetBox's list match."** A clean result under the old
+  one-directional walk would not have proven the backfill was complete;
+  this gate only means something now that the comparison itself checks
+  both directions.
+- [ ] **Step 8: Deliberately test the exclusion filter** — create a
+  NetBox record with the same key+type as a known `external-dns`-managed
+  UDM record, confirm the sync does *not* touch it, before trusting Step
+  5's logic on real data.
+- [ ] **Step 9: Update the README.**
+- [ ] **Step 10: Commit.**
 
 ### Task 4: First real NetBox-sourced write (Gate G4)
 
