@@ -23,27 +23,6 @@ module "s3_buckets" {
         application = "home-assistant"
       }
     }
-
-    longhorn_backups_home_ops = {
-      bucket_name = "longhorn-backups-home-ops"
-
-      server_side_encryption = {
-        algorithm          = "AES256"
-        bucket_key_enabled = true
-      }
-
-      public_access_block = {
-        block_public_acls       = true
-        block_public_policy     = true
-        ignore_public_acls      = true
-        restrict_public_buckets = true
-      }
-
-      tags = {
-        application = "longhorn"
-        purpose     = "kubernetes-backups"
-      }
-    }
   }
 
   common_tags = local.common_tags
