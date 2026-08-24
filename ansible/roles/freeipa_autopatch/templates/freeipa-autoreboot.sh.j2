@@ -1,0 +1,16 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Managed by the freeipa_autopatch Ansible role. Reboots this replica ONLY if
+# a reboot is actually required (kernel / glibc / openssl / etc. picked up by
+# unattended security patching). Scheduled in a per-site staggered window so
+# the IPA mesh never loses two replicas at once.
+set -euo pipefail
+
+# needs-restarting -r: exit 0 = no reboot needed, exit 1 = reboot needed.
+if needs-restarting -r; then
+  echo "no reboot required"
+  exit 0
+fi
+
+echo "reboot required after security patching — rebooting now (site {{ site | default('?') }})"
+systemctl reboot

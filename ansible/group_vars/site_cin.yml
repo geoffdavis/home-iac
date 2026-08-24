@@ -1,0 +1,12 @@
+---
+# Per-site group_vars for the Cincinnati (cin) site.
+#
+# Members (per inventory.yml `site_cin` group):
+#   - nas-cin  (NixOS + libvirt — the planned TrueNAS migration (#109) was
+#               superseded by the NixOS trial; see nix-personal PR #107)
+#   - ipa-cin  (FreeIPA replica VM on nas-cin, provisioned by
+#               playbooks/nixos-freeipa-vm.yml via the nixos_freeipa_vm role)
+#
+# See ansible/group_vars/site_sdg.yml for the design rationale on
+# why `site` lives in per-site group_vars rather than each host_vars.
+site: "cin"

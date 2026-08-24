@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Reboot if required after security patching (freeipa_autopatch)
+# needs-restarting ships in dnf-utils (installed by the role).
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/freeipa-autoreboot.sh

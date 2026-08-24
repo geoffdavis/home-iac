@@ -1,0 +1,123 @@
+---
+# freeipa_autopatch — runs ON the FreeIPA replica VMs (ipa_replicas group).
+# Configures: (1) dnf-automatic security-only unattended patching,
+# (2) a daily netbird upgrade that restarts the daemon only on change,
+# (3) a per-site staggered post-patch reboot that fires only when
+# `needs-restarting -r` says a reboot is required. See README.md.
+
+- name: Install patching tooling
+  become: true
+  ansible.builtin.dnf:
+    name:
+      - dnf-automatic   # unattended security updates
+      - dnf-utils       # provides needs-restarting (used by the reboot check)
+    state: present
+
+# --- OS security patching (dnf-automatic) -----------------------------------
+- name: Configure dnf-automatic (security-only)
+  become: true
+  ansible.builtin.template:
+    src: automatic.conf.j2
+    dest: /etc/dnf/automatic.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: freeipa_autopatch_security_enabled
+
+- name: Ensure dnf-automatic.timer drop-in directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnf-automatic.timer.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: freeipa_autopatch_security_enabled
+
+- name: Pin dnf-automatic.timer schedule (drop-in)
+  become: true
+  ansible.builtin.template:
+    src: dnf-automatic.timer-override.conf.j2
+    dest: /etc/systemd/system/dnf-automatic.timer.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  when: freeipa_autopatch_security_enabled
+
+# --- netbird daily upgrade --------------------------------------------------
+# The custom unit files + scripts are installed UNCONDITIONALLY (no
+# *_enabled guard). The enable/disable tasks below key the timer's
+# enabled/state off the feature flag; for the disable path to actually stop a
+# previously-enabled timer, the unit must exist for systemd to act on. When a
+# feature is off the units are simply present-but-disabled (inert).
+- name: Install netbird upgrade script
+  become: true
+  ansible.builtin.template:
+    src: freeipa-netbird-update.sh.j2
+    dest: /usr/local/sbin/freeipa-netbird-update.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install netbird upgrade service + timer
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - freeipa-netbird-update.service
+    - freeipa-netbird-update.timer
+  notify: Reload systemd
+
+# --- staggered post-patch reboot --------------------------------------------
+- name: Install auto-reboot script
+  become: true
+  ansible.builtin.template:
+    src: freeipa-autoreboot.sh.j2
+    dest: /usr/local/sbin/freeipa-autoreboot.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install auto-reboot service + timer
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - freeipa-autoreboot.service
+    - freeipa-autoreboot.timer
+  notify: Reload systemd
+
+# Apply any unit-file changes before enabling/starting the timers below.
+- name: Reload systemd now if any unit changed
+  ansible.builtin.meta: flush_handlers
+
+# --- enable / start (or disable / stop when a feature is toggled off) --------
+- name: Enable + start dnf-automatic.timer
+  become: true
+  ansible.builtin.systemd:
+    name: dnf-automatic.timer
+    enabled: "{{ freeipa_autopatch_security_enabled }}"
+    state: "{{ 'started' if freeipa_autopatch_security_enabled else 'stopped' }}"
+
+- name: Enable + start (or disable + stop) netbird upgrade timer
+  become: true
+  ansible.builtin.systemd:
+    name: freeipa-netbird-update.timer
+    enabled: "{{ freeipa_autopatch_netbird_enabled }}"
+    state: "{{ 'started' if freeipa_autopatch_netbird_enabled else 'stopped' }}"
+
+- name: Enable + start (or disable + stop) staggered reboot timer
+  become: true
+  ansible.builtin.systemd:
+    name: freeipa-autoreboot.timer
+    enabled: "{{ freeipa_autopatch_reboot_enabled }}"
+    state: "{{ 'started' if freeipa_autopatch_reboot_enabled else 'stopped' }}"

@@ -1,0 +1,40 @@
+---
+# freeipa_rsyslog — runs ON the FreeIPA replica VMs (ipa_replicas group).
+# Forwards the journal to the fleet syslog catcher as RFC5424/TCP (the VM
+# half of nix-personal#200; the NAS half is modules/nas/syslog-forward.nix
+# there) and pins the VM timezone to UTC so local timestamps can't drift
+# from what the catcher records.
+#
+# Rocky 10's stock /etc/rsyslog.conf already loads imjournal and reads the
+# journal, and keeps writing /var/log/messages (fine here — no eMMC concern
+# on these VMs). We only drop in the forwarding action; the base config
+# stays untouched and owns all module loading.
+
+- name: Pin timezone to UTC (RFC5424 stamps carry the offset either way,
+    but local logs/cron/cert-expiry math shouldn't depend on site TZ)
+  become: true
+  community.general.timezone:
+    name: UTC
+
+- name: Install rsyslog (journald-only by default on Rocky 10 minimal)
+  become: true
+  ansible.builtin.dnf:
+    name: rsyslog
+    state: present
+
+- name: Drop in the fleet-syslog forwarding action
+  become: true
+  ansible.builtin.template:
+    src: 30-forward-fleet-syslog.conf.j2
+    dest: /etc/rsyslog.d/30-forward-fleet-syslog.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rsyslog
+
+- name: Enable and start rsyslog
+  become: true
+  ansible.builtin.systemd:
+    name: rsyslog.service
+    enabled: true
+    state: started

@@ -1,0 +1,19 @@
+---
+# group_vars for the IPA bootstrap replica (currently only ipa-sdg).
+# Inherits everything from ipa_replicas (parent group); this file
+# overrides what's bootstrap-specific.
+
+# Override the default `ipa_role: replica` from group_vars/ipa_replicas.yml.
+# The bootstrap host runs `ipa-server-install --external-ca` through the
+# XCA signing ceremony (see docs/freeipa-runbook.md). Every other replica
+# joins THIS host via OTP.
+ipa_role: "bootstrap"
+
+# IPA subordinate CA common-name override. Default is
+# `CN=Certificate Authority,O=<realm>`, which is indistinguishable in
+# certificate UIs (Mac Keychain, Firefox certmgr, etc.) that only show
+# the CN — running multiple IPA realms or other "Certificate Authority"-
+# CN CAs yields several entries all labelled identically. A unique CN
+# solves that. Only meaningful on the bootstrap host: replicas join an
+# existing realm and inherit its CA, so this var isn't used elsewhere.
+ipaserver_ca_subject: "CN=GeoffDavis IPA Subordinate CA,O=IPA.GEOFFDAVIS.COM"

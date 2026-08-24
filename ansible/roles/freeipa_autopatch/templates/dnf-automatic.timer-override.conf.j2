@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Drop-in for dnf-automatic.timer (managed by the freeipa_autopatch role).
+# Pin the schedule so security patches land before the staggered reboot
+# windows. `OnCalendar=` is cleared first because systemd merges (does not
+# replace) repeated OnCalendar= keys across drop-ins.
+[Timer]
+OnCalendar=
+OnCalendar={{ freeipa_autopatch_security_oncalendar }}
+RandomizedDelaySec={{ freeipa_autopatch_randomized_delay }}
+Persistent=true

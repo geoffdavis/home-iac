@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+{% set _site_offset = freeipa_autopatch_reboot_site_offset_hours.get(site | default(''), 0) %}
+{% set _hour = freeipa_autopatch_reboot_base_hour + _site_offset %}
+{% set _computed = '*-*-* %02d:%02d:00' | format(_hour, freeipa_autopatch_reboot_minute) %}
+[Unit]
+Description=Staggered post-patch reboot check (freeipa_autopatch)
+
+[Timer]
+# site={{ site | default('?') }} → base {{ freeipa_autopatch_reboot_base_hour }} + offset {{ _site_offset }}
+OnCalendar={{ freeipa_autopatch_reboot_oncalendar if freeipa_autopatch_reboot_oncalendar else _computed }}
+RandomizedDelaySec={{ freeipa_autopatch_randomized_delay }}
+# Persistent is intentionally OFF here (unlike the patch timers). With it on,
+# systemd catches up a missed OnCalendar run immediately on activation/boot —
+# so a timer first enabled after its window, or replicas that were down through
+# their windows, would all run the reboot check at once with only the shared
+# jitter, defeating the per-site stagger. A reboot is never urgent: skipping
+# one day's window just defers to the next day's proper site window.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

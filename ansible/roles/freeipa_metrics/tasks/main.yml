@@ -1,0 +1,128 @@
+---
+# freeipa_metrics — runs ON the FreeIPA replica VMs (ipa_replicas group).
+# Exposes node_exporter on :9100 (reachable ONLY over the netbird overlay:
+# wt0 sits in firewalld's `trusted` zone while enp1s0 stays in `public`,
+# which blocks 9100 — verified live 2026-07-08, no firewall change needed)
+# plus ipa-healthcheck results as textfile metrics. Scraped by the
+# nas-sdg VictoriaMetrics hub (nix-personal#153 Phase 3).
+
+- name: Create node_exporter system user
+  become: true
+  ansible.builtin.user:
+    name: node_exporter
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+
+- name: Download node_exporter release (pinned + checksummed)
+  become: true
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ freeipa_metrics_node_exporter_version }}/node_exporter-{{ freeipa_metrics_node_exporter_version }}.linux-amd64.tar.gz"
+    dest: "/tmp/node_exporter-{{ freeipa_metrics_node_exporter_version }}.tar.gz"
+    checksum: "sha256:{{ freeipa_metrics_node_exporter_sha256 }}"
+    mode: "0644"
+
+- name: Unpack node_exporter into a versioned dir
+  become: true
+  ansible.builtin.unarchive:
+    src: "/tmp/node_exporter-{{ freeipa_metrics_node_exporter_version }}.tar.gz"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/node_exporter-{{ freeipa_metrics_node_exporter_version }}.linux-amd64/node_exporter"
+
+- name: Symlink current node_exporter (version bump flips the link)
+  become: true
+  ansible.builtin.file:
+    src: "/opt/node_exporter-{{ freeipa_metrics_node_exporter_version }}.linux-amd64/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    state: link
+  notify: Restart node_exporter
+
+- name: Create textfile collector dir
+  become: true
+  ansible.builtin.file:
+    path: "{{ freeipa_metrics_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install node_exporter unit
+  become: true
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart node_exporter
+
+- name: Ensure ipa-healthcheck is installed (separate package from the server)
+  become: true
+  ansible.builtin.dnf:
+    name: ipa-healthcheck
+    state: present
+
+- name: Install ipa-healthcheck metrics script
+  become: true
+  ansible.builtin.copy:
+    src: ipa_healthcheck_metrics.py
+    dest: /usr/local/bin/ipa-healthcheck-metrics
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install ipa-healthcheck metrics units
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - ipa-healthcheck-metrics.service
+    - ipa-healthcheck-metrics.timer
+  notify: Reload systemd
+
+- name: Install netbird metrics script
+  become: true
+  ansible.builtin.copy:
+    src: netbird_metrics.py
+    dest: /usr/local/bin/netbird-metrics
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install netbird metrics units
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - netbird-metrics.service
+    - netbird-metrics.timer
+  notify: Reload systemd
+
+- name: Flush handlers before enabling units
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start node_exporter + metrics timers
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - node_exporter.service
+    - ipa-healthcheck-metrics.timer
+    - netbird-metrics.timer
+
+- name: Prime the metrics once (don't wait for the timers)
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+  loop:
+    - ipa-healthcheck-metrics.service
+    - netbird-metrics.service
+  changed_when: false

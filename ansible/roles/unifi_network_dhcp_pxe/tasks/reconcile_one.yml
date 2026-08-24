@@ -1,0 +1,86 @@
+---
+# Per-network reconciliation, included in a loop from main.yml. Reads
+# the loop var `_udm_network` (one entry from _udm_matching_networks)
+# plus `_udm_desired_pxe`, `_udm_cookie`, and `_udm_csrf` already set
+# in main.yml's scope. Idempotent: PUT only fires when the diff shows
+# drift; verify-assert is skipped under --check.
+
+- name: "Compute current PXE for {{ _udm_network.name }}"
+  ansible.builtin.set_fact:
+    _udm_current_pxe:
+      dhcpd_boot_enabled: "{{ _udm_network.dhcpd_boot_enabled | default(false) }}"
+      dhcpd_boot_server: "{{ _udm_network.dhcpd_boot_server | default('') }}"
+      dhcpd_boot_filename: "{{ _udm_network.dhcpd_boot_filename | default('') }}"
+
+- name: "Decide if a PUT is needed for {{ _udm_network.name }}"
+  ansible.builtin.set_fact:
+    _udm_pxe_needs_update: "{{ _udm_current_pxe != _udm_desired_pxe }}"
+
+- name: "Show PXE diff for {{ _udm_network.name }}"
+  ansible.builtin.debug:
+    msg:
+      - "Network: {{ _udm_network.name }} (id: {{ _udm_network._id }})"
+      - "Current PXE: {{ _udm_current_pxe }}"
+      - "Desired PXE: {{ _udm_desired_pxe }}"
+      - "Update needed: {{ _udm_pxe_needs_update }}"
+
+# UniFi controller's PUT on /rest/networkconf/<id> accepts partial
+# bodies — only the supplied fields are updated, the rest of the
+# network config is preserved. This is well-documented behavior on
+# UniFi 6.x → 9.x. We deliberately do NOT round-trip the whole
+# network config to avoid accidentally re-writing fields the role
+# doesn't manage (VLANs, gateway IPs, DNS forwarders).
+- name: "PUT updated PXE fields on {{ _udm_network.name }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_dhcp_pxe_controller_url }}/proxy/network/api/s/{{ unifi_network_dhcp_pxe_site }}/rest/networkconf/{{ _udm_network._id }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _udm_cookie }}"
+      X-CSRF-Token: "{{ _udm_csrf }}"
+    body_format: json
+    body: "{{ _udm_desired_pxe }}"
+    validate_certs: "{{ unifi_network_dhcp_pxe_validate_certs }}"
+    status_code: [200, 201]
+    return_content: false
+  when: _udm_pxe_needs_update | bool
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: _udm_pxe_needs_update | bool
+
+# Re-query to confirm the PUT persisted. `uri` is a no-op for non-GET
+# methods under --check, so a verify-and-assert here would always fail
+# in dry-run when drift exists. Gate on `not ansible_check_mode` to
+# keep --check as a clean diff preview.
+- name: "Re-query {{ _udm_network.name }} to verify PUT took effect"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_dhcp_pxe_controller_url }}/proxy/network/api/s/{{ unifi_network_dhcp_pxe_site }}/rest/networkconf/{{ _udm_network._id }}"
+    method: GET
+    headers:
+      Cookie: "{{ _udm_cookie }}"
+      X-CSRF-Token: "{{ _udm_csrf }}"
+    validate_certs: "{{ unifi_network_dhcp_pxe_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_verify
+  when:
+    - _udm_pxe_needs_update | bool
+    - not ansible_check_mode
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: "Assert the new PXE config took effect on {{ _udm_network.name }}"
+  ansible.builtin.assert:
+    that:
+      - (_udm_verify.json.data[0].dhcpd_boot_enabled | default(false)) == _udm_desired_pxe.dhcpd_boot_enabled
+      - (_udm_verify.json.data[0].dhcpd_boot_server | default('')) == _udm_desired_pxe.dhcpd_boot_server
+      - (_udm_verify.json.data[0].dhcpd_boot_filename | default('')) == _udm_desired_pxe.dhcpd_boot_filename
+    fail_msg: |
+      PUT succeeded but the subsequent GET shows different PXE
+      values for network '{{ _udm_network.name }}'. Inspect manually
+      in the UniFi UI. Sometimes a "Save" race with a concurrent UI
+      edit can cause this; re-run the playbook.
+  when:
+    - _udm_pxe_needs_update | bool
+    - not ansible_check_mode

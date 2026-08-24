@@ -1,0 +1,55 @@
+---
+# Shared config for NixOS NAS hosts (nas-cin, nas-sct). The hosts'
+# OS-level config lives in the nix-personal repo (hosts/nas-<site>/);
+# this repo's ansible only handles orchestration that spans repos —
+# today that's FreeIPA replica VM provisioning (nixos_freeipa_vm role).
+#
+# NOT a child of nas_overlay: none of the UGOS-era group_vars
+# (puid/pgid, komodo, dnsmasq stub port) apply here, and plays that
+# target nas_overlay must not match NixOS hosts.
+
+# --- Connection ----------------------------------------------------------
+# Connect as the dedicated LOCAL `ansible` automation account (nix-common's
+# my.ansibleUser, enabled on every NAS box), NOT root and NOT the nasadmin
+# break-glass login — automation gets its own least-privilege identity with
+# an independently-rotatable key and a clean audit trail. It has NOPASSWD
+# sudo, so become escalates for the privileged tasks (VM provisioning etc.).
+#
+# The op-ansible key is pinned explicitly because ~/.ssh/config maps
+# *.netbird.cloud to the op-Personal key, which the `ansible` user does NOT
+# authorize; IdentitiesOnly stops ssh from offering op-Personal first.
+#
+# NOTE: nas-sct (dual-membership transitional host — see inventory.yml)
+# keeps its host-level `ansible_user: truenas_admin`, which outranks this
+# group var per Ansible precedence (host vars beat group vars).
+#
+# Python for ansible modules resolves via interpreter discovery
+# (interpreter_python=auto_silent in ansible.cfg): NixOS has no
+# /usr/bin/python3, but discovery also probes bare `python3` on $PATH,
+# which hits /run/current-system/sw/bin/python3 as long as python3 is in
+# environment.systemPackages (it is, per nix-personal modules/nas/).
+ansible_user: ansible
+ansible_become: true
+ansible_become_method: sudo
+ansible_ssh_private_key_file: "~/.ssh/op-ansible-ssh-key.pub"
+ansible_ssh_common_args: "-o IdentitiesOnly=yes"
+
+# --- FreeIPA replica VM identity (derived from `site`) -------------------
+# Mirrors the truenas_freeipa_vm_* derivations in group_vars/nas_truenas.yml
+# under the nixos_freeipa_vm_* namespace consumed by the nixos_freeipa_vm
+# role. Deliberately a SMALL DUPLICATION rather than a cross-namespace
+# fallback (`nixos_… | default(truenas_…)`): NixOS hosts aren't in
+# nas_truenas, so the truenas_freeipa_vm_* vars simply don't exist here
+# and a fallback chain would just be an undefined-variable trap wearing a
+# DRY costume. Keep the two blocks in sync when the convention changes.
+nixos_freeipa_vm_name: "ipa-{{ site }}"
+nixos_freeipa_vm_server_fqdn: "{{ nixos_freeipa_vm_name }}.ipa.geoffdavis.com"
+nixos_freeipa_vm_netbird_peer_name: "{{ nixos_freeipa_vm_name }}-replica"
+nixos_freeipa_vm_netbird_setup_key_op_item: "freeipa-netbird-setup-key-{{ inventory_hostname }}"
+# Fleet-wide 1P SSH-key item name (identical on every host).
+nixos_freeipa_vm_ssh_pubkey_op_item: "ansible-ssh-key"
+# Fleet-wide pinned hash for the Rocky 10 GenericCloud qcow2 — same pin
+# as truenas_freeipa_vm_image_sha256 in group_vars/nas_truenas.yml; bump
+# BOTH together (and the image_url defaults) when refreshing the image.
+# Source: https://download.rockylinux.org/pub/rocky/10/images/x86_64/CHECKSUM
+nixos_freeipa_vm_image_sha256: "9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48"

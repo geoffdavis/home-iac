@@ -71,36 +71,45 @@ of work — don't treat it as a formality.
 its own reviewable unit — a straight migration commit, with the NetBox
 rewrite (Task 3+) as a clean follow-on, not mixed into the same change.
 
-- [ ] **Step 1: Copy `ansible/roles/{nixos_freeipa_vm,freeipa_autopatch,
+- [x] **Step 1: Copy `ansible/roles/{nixos_freeipa_vm,freeipa_autopatch,
   freeipa_metrics,freeipa_rsyslog,unifi_network_dns_record,
   unifi_network_dhcp_pxe,unifi_network_port_forward}/`** from
   `ugreen-nas-compose` verbatim — no changes yet. Preserve git blame if
   practical (e.g. `git subtree`/`git format-patch` rather than a raw
-  copy, if history continuity matters here).
-- [ ] **Step 2: Copy `ansible/playbooks/`, `ansible/inventory.yml`, and
+  copy, if history continuity matters here). Done via `git-filter-repo` +
+  `git merge --allow-unrelated-histories` — history preserved, verified
+  byte-identical to the source at copy time.
+- [x] **Step 2: Copy `ansible/playbooks/`, `ansible/inventory.yml`, and
   the relevant `host_vars/`** — only what these seven roles need, not
   `ugreen-nas-compose`'s full inventory (which also covers the now-dropped
   `truenas_*`/orphaned roles per geoffdavis/ugreen-nas-compose#249 — don't
-  bring those over even by accident).
-- [ ] **Step 3: Confirm the 1Password items these roles reference**
+  bring those over even by accident). Also dropped the `oob_kvm` (JetKVM)
+  group, which none of these roles touch either.
+- [x] **Step 3: Confirm the 1Password items these roles reference**
   (`UniFi UDM Pro (ansible)`, the FreeIPA credentials) are reachable from
   this repo's existing `op run` convention — same 1Password vault, just a
-  new consumer repo.
-- [ ] **Step 4: Add ansible-lint to `.pre-commit-config.yaml`**, matching
+  new consumer repo. Confirmed live.
+- [x] **Step 4: Add ansible-lint to `.pre-commit-config.yaml`**, matching
   whatever config `ugreen-nas-compose` used, adapted to this repo's
-  pre-commit conventions.
-- [ ] **Step 5: Add `task ansible:*` targets to `Taskfile.yml`** —
+  pre-commit conventions. `ugreen-nas-compose` never had ansible-lint
+  wired up at all — added fresh, see `.ansible-lint`'s header comment.
+- [x] **Step 5: Add `task ansible:*` targets to `Taskfile.yml`** —
   `ansible:check` (lint/syntax-check), `ansible:run` (the playbooks) —
   matching this repo's existing `task plan`/`task apply` naming spirit.
-- [ ] **Step 6: Run every migrated playbook in check/dry-run mode**
+  Also added `ansible:install`.
+- [x] **Step 6: Run every migrated playbook in check/dry-run mode**
   against the real FreeIPA VM and UDM, confirm zero unexpected diffs —
   this proves the migration didn't silently change behavior before Task 2
-  even starts.
-- [ ] **Step 7: Update `README.md`**'s "What it manages" section to
+  even starts. Done — see PR #10 for the full per-playbook results
+  (clean across the board, with one pre-existing check-mode gap in the
+  three `unifi_network_*` roles fixed live to make the proof possible,
+  and `nixos_freeipa_vm`'s check-mode limitation documented rather than
+  worked around).
+- [x] **Step 7: Update `README.md`**'s "What it manages" section to
   include FreeIPA replica management and UDM integration alongside the
   existing S3/IAM description.
-- [ ] **Step 8: Commit as its own PR**, separate from the NetBox-rewrite
-  work that follows.
+- [x] **Step 8: Commit as its own PR**, separate from the NetBox-rewrite
+  work that follows. PR #10 (geoffdavis/home-iac), not yet merged.
 
 ### Task 2: One-shot backfill — import UDM state into NetBox (Gate G2)
 

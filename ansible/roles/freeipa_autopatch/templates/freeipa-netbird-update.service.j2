@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Upgrade netbird client (freeipa_autopatch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/freeipa-netbird-update.sh

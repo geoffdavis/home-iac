@@ -1,0 +1,63 @@
+---
+# argument_specs locks the role's input schema at role-entry so malformed
+# host_vars / group_vars overrides fail with a per-key error before any
+# state-changing task runs.
+argument_specs:
+  main:
+    short_description: Unattended security patching + netbird upgrades + staggered reboot on FreeIPA replica VMs.
+    description:
+      - >-
+        Runs ON the FreeIPA replica VMs (the ipa_replicas inventory group),
+        NOT on the TrueNAS host. Installs and enables dnf-automatic in
+        security-only mode, a daily `dnf upgrade netbird` timer (restarting
+        the daemon only on change), and a per-site staggered auto-reboot timer
+        that reboots only when `needs-restarting -r` says one is required.
+      - >-
+        New VMs get the dnf-automatic security baseline directly from the
+        truenas_freeipa_vm cloud-init template; this role is the re-runnable
+        source of truth that converges existing VMs and layers on the netbird
+        upgrade + staggered reboot timers.
+    options:
+      freeipa_autopatch_security_enabled:
+        type: bool
+        default: true
+        description: Install + enable dnf-automatic (security-only) for OS packages.
+      freeipa_autopatch_security_oncalendar:
+        type: str
+        default: "*-*-* 02:00:00"
+        description: systemd OnCalendar for dnf-automatic.timer. Keep before the reboot windows.
+      freeipa_autopatch_netbird_enabled:
+        type: bool
+        default: true
+        description: Install + enable the daily netbird upgrade timer.
+      freeipa_autopatch_netbird_oncalendar:
+        type: str
+        default: "*-*-* 03:00:00"
+        description: systemd OnCalendar for the netbird upgrade timer.
+      freeipa_autopatch_reboot_enabled:
+        type: bool
+        default: true
+        description: Install + enable the staggered auto-reboot timer (reboots only when needs-restarting -r requires it).
+      freeipa_autopatch_reboot_base_hour:
+        type: int
+        default: 4
+        description: Base hour (0-23) for the reboot window; per-site offset is added on top.
+      freeipa_autopatch_reboot_minute:
+        type: int
+        default: 30
+        description: Minute (0-59) of the reboot window.
+      freeipa_autopatch_reboot_site_offset_hours:
+        type: dict
+        default:
+          sdg: 0
+          sct: 1
+          cin: 2
+        description: Per-site hour offset added to base_hour so each site reboots in a distinct window.
+      freeipa_autopatch_reboot_oncalendar:
+        type: str
+        default: ""
+        description: Full OnCalendar override; non-empty bypasses the base_hour + site-offset computation.
+      freeipa_autopatch_randomized_delay:
+        type: str
+        default: "20m"
+        description: RandomizedDelaySec applied to every timer to spread firing across the fleet.

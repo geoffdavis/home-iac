@@ -61,3 +61,35 @@ tasks:
       - rm -rf environments/*/.terraform
       - rm -f environments/*/tfplan
       - rm -f environments/*/.terraform.lock.hcl
+
+  ansible:install:
+    desc: Install the pinned Ansible collection dependencies
+    dir: ansible
+    cmds:
+      - ansible-galaxy collection install -r collections/requirements.yml
+
+  ansible:check:
+    desc: Lint + syntax-check the migrated Ansible playbooks (static, no live connections)
+    cmds:
+      # Reuses the pre-commit-managed ansible-lint install (see
+      # .pre-commit-config.yaml) instead of assuming a bare `ansible-lint`
+      # on PATH — ansible-core is available globally on this repo's
+      # dev machines, but ansible-lint isn't.
+      - pre-commit run ansible-lint --all-files
+      - >-
+        cd ansible && ansible-playbook -i inventory.yml --syntax-check
+        playbooks/freeipa-autopatch.yml
+        playbooks/freeipa-metrics.yml
+        playbooks/freeipa-rsyslog.yml
+        playbooks/nixos-freeipa-vm.yml
+        playbooks/unifi-network.yml
+
+  ansible:run:
+    desc: >-
+      Run a migrated playbook against real infrastructure. 1Password creds
+      resolve via op run, matching this repo's Terraform convention.
+      Usage: task ansible:run -- playbooks/unifi-network.yml [ansible-playbook args...]
+      Add --check --diff for a dry run (e.g. against the live FreeIPA VM / UDM).
+    dir: ansible
+    cmds:
+      - op run --env-file ../.env -- ansible-playbook -i inventory.yml {{.CLI_ARGS}}

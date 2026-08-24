@@ -1,0 +1,38 @@
+---
+# Provision the FreeIPA libvirt/KVM VM on a NixOS host (virsh/qemu-img/zfs
+# over SSH — the NixOS sibling of truenas-freeipa-vm.yml's midclt path).
+# One host per invocation (use --limit; the nas_nixos group may contain
+# transitional dual-membership hosts and the role's preflight only
+# fail-safes them, it doesn't skip them silently). Idempotent — re-running
+# on a host whose VM already exists is a no-op (if running) or a start
+# (if shut off).
+#
+# Operator workflow (ipa-cin bring-up):
+#   0. HUMAN STEP — mint a fresh ONE-OFF netbird setup key in the netbird
+#      dashboard and store it in 1Password as
+#      'freeipa-netbird-setup-key-nas-cin' (vault: nas-overlay, field:
+#      credential/password). Setup keys are single-use: a consumed key
+#      makes `netbird up` fail inside the VM and the play time out at the
+#      DNS-wait stage (the assert there has the recovery steps).
+#   1. ansible-playbook -i inventory.yml playbooks/nixos-freeipa-vm.yml --limit nas-cin
+#      → wait for play to finish (cloud-init done = packages installed,
+#        netbird peer 'ipa-cin-replica' registered, seed ISO scrubbed)
+#   2. ansible-playbook -i inventory.yml playbooks/freeipa-install.yml --limit ipa-cin
+#      → drives ipa-replica-install (OTP self-mint against ipa-sdg,
+#        SASL-workaround shell path)
+#   3. ansible-playbook -i inventory.yml playbooks/freeipa-install.yml --limit ipa_bootstrap --tags mesh
+#      → closes the replication topology mesh over the new replica
+#   4. Inventory: ipa-cin is ALREADY in ipa_replicas/ipa_secondary (added
+#      as a placeholder during the fleet-wide site refactor) — nothing to
+#      add; steps 2-3 resolve it via ipa-cin-replica.netbird.cloud.
+
+- name: Provision FreeIPA libvirt/KVM VM on NixOS host
+  hosts: nas_nixos
+  # Facts are load-bearing: preflight asserts ansible_facts.distribution
+  # == NixOS before any state-changing call, and provisioning uses
+  # ansible_facts.date_time.epoch for staging-path entropy. No become-pass
+  # pre_task dance like the TrueNAS twin — nas_nixos connects as root.
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: nixos_freeipa_vm

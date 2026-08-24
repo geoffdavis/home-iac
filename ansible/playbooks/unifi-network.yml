@@ -1,0 +1,26 @@
+---
+# playbooks/unifi-network.yml — reconcile UDM Pro network config for the
+# fleet: DHCP reservations + PXE next-server (unifi_network_dhcp_pxe),
+# port-forwards (unifi_network_port_forward), and static DNS records
+# (unifi_network_dns_record). Extracted from the retired
+# truenas-bootstrap.yml when the TrueNAS/Komodo tooling was removed.
+#
+# All UDM API calls run `delegate_to: localhost` (controller-side); the
+# in-between set_fact/assert/debug tasks execute per inventory host but
+# never connect to it — the host loop only supplies per-host vars
+# (lan_ip + the opt-in flags). Opt-in per host via `unifi_network_dhcp_pxe_enabled` /
+# `unifi_network_port_forward_enabled` / `unifi_network_dns_record_enabled`
+# (all default false), set in host_vars. Credentials: 1Password vault
+# "Automation" > "UniFi UDM Pro (ansible)" — see each role's README.
+#
+#   uv run ansible-playbook playbooks/unifi-network.yml
+#   uv run ansible-playbook playbooks/unifi-network.yml --limit nas-sdg
+- name: Reconcile UniFi UDM network config (DHCP/PXE + port-forwards + DNS)
+  hosts: nas_nixos
+  # API calls delegate to localhost (the UDM API lives controller-side);
+  # we never connect to the NAS host itself, so skip fact gathering.
+  gather_facts: false
+  roles:
+    - unifi_network_dhcp_pxe
+    - unifi_network_port_forward
+    - unifi_network_dns_record

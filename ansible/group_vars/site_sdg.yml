@@ -1,0 +1,21 @@
+---
+# Per-site group_vars for the San Diego (sdg) site.
+#
+# Members (per inventory.yml `site_sdg` group):
+#   - nas-sdg        (NixOS host; OS config lives in nix-personal)
+#   - ipa-sdg        (FreeIPA replica VM running on nas-sdg)
+#   - jetkvm-sdg-01  (JetKVM OOB console — roaming rack unit)
+#   - jetkvm-sdg-02  (JetKVM OOB console — bolted to nas-sdg)
+#
+# `site` is the SOURCE OF TRUTH for the per-site short-code, declared
+# here once and inherited by every host in the site. Downstream
+# playbooks should reference `{{ site }}` instead of re-deriving it
+# from inventory_hostname — keeps the fleet's site convention
+# (host = nas-{site} or ipa-{site}, IPA replica = ipa-{site}.
+# ipa.geoffdavis.com, per-site IPA group = truenas-admins-{site}) in
+# one place.
+site: "sdg"
+
+# Future per-site shared config can be added below (e.g. site-specific
+# UDM IP, NTP server, default DNS upstreams, etc.). Per-host overrides
+# still live in host_vars/<host>.yml.

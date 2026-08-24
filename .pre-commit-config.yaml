@@ -18,3 +18,25 @@ repos:
           - --hook-config=--retry-once-with-cleanup=true
           - --hook-config=--tf-path=tofu
           - --tf-init-args=-backend=false
+
+  # Ansible linting for the ansible/ tree (Task 1 of
+  # docs/superpowers/plans/2026-08-21-netbox-udm-sync.md). ugreen-nas-compose,
+  # where these roles were migrated from, never wired up ansible-lint at
+  # all — see .ansible-lint's header comment for why the rule set here is
+  # deliberately loose for now.
+  - repo: https://github.com/ansible/ansible-lint
+    # Pinned to the last release whose pre-commit hook manifest requests
+    # python3.14 (v26.2.0+ requires it; this repo's dev toolchain currently
+    # provides up to python3.13 via nix). Bump once python3.14 is available,
+    # or once a future ansible-lint release relaxes the pin.
+    rev: v26.1.1
+    hooks:
+      - id: ansible-lint
+        files: ^ansible/
+        # pre-commit hooks run from the repo root, but the playbooks live
+        # at ansible/playbooks/ and reference roles by name (roles_path =
+        # roles in ansible/ansible.cfg, relative to ansible/). Without
+        # --project-dir, ansible-lint's default role search resolves
+        # relative to the repo root instead and fails every playbook with
+        # syntax-check[specific]: role not found.
+        args: [--project-dir, ansible]

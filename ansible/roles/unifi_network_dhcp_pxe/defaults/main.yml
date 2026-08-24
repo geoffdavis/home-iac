@@ -1,0 +1,71 @@
+---
+# unifi_network_dhcp_pxe: idempotent management of DHCP PXE-boot
+# options (Option 66 next-server + Option 67 boot-filename) on a
+# named UniFi Network via the UDM Pro / UniFi Network controller's
+# REST API. Runs entirely controller-side (delegate_to: localhost)
+# — there's nothing host-local; the configuration lives in the UDM's
+# settings.
+#
+# Steady-state convergence: GET network config → diff against desired
+# dhcpd_boot_* fields → PUT only on drift. Re-runs report changed=0.
+#
+# Mirrors the cloudflare_tunnel_ingress role's structure (the existing
+# controller-side API-reconciliation pattern in this repo). See that
+# role's README for the design rationale.
+
+# Opt-in per host. Default false so non-PXE-serving hosts inherit a
+# no-op. Flipped to true in host_vars on the host that serves PXE
+# (nas-sdg, which runs the netbootxyz TFTP server via nix-personal).
+unifi_network_dhcp_pxe_enabled: false
+
+# Controller base URL. UDM Pro typically serves the Network app at
+# https://<udm-ip>/. Don't include a trailing slash. Override per-host
+# if the controller is a cloud key, standalone Network app, or
+# different IP than the LAN gateway.
+unifi_network_dhcp_pxe_controller_url: "https://172.29.50.1"
+
+# Cert validation. UDM Pro ships with a self-signed cert by default,
+# so this defaults to false. Flip to true if the controller has been
+# given a trusted cert (Caddy / cert-manager / manual upload).
+unifi_network_dhcp_pxe_validate_certs: false
+
+# UniFi site identifier. "default" is the site name on a fresh UDM
+# install and the most common case. The site IDENTIFIER (used in URLs)
+# is usually "default" even when the display name has been changed —
+# the API uses internal IDs, not display names. Verify via the URL
+# bar in the controller UI: /manage/site/<this-value>/dashboard.
+unifi_network_dhcp_pxe_site: "default"
+
+# Target network display names. List of UDM Network display names to
+# enable PXE on — the role does a single GET against /rest/networkconf
+# and reconciles every name in this list. Case-sensitive; must match
+# exactly what shows in Settings → Networks (e.g. "Private", "IoT").
+# A typo or stale name fails fast with a list of available names so
+# you can fix the host_vars without going to the UI.
+#
+# Most homes only want PXE on the trusted/wired LAN. If you have
+# multiple internal networks where a host might legitimately PXE-boot
+# (mgmt, IoT-with-rescue, etc.), list them all. Don't enable on guest
+# / DMZ / WAN-facing networks (random PXE on guest = bad).
+unifi_network_dhcp_pxe_target_network_names: []
+
+# 1Password lookup for the controller's admin credentials. The role
+# expects a single item with `username` + `password` fields (the
+# default 1P "Login" item shape covers this). Vault name follows the
+# cloudflare_tunnel_ingress convention — controller-side automation
+# credentials live in "Automation".
+#
+# Create the item once with read-only access via UniFi's local-admin
+# UI: Settings → Admins & Users → Create New Admin → Role "Limited
+# Admin" with site permissions on the target site. (Owner role works
+# too but is wider than this role needs.)
+unifi_network_dhcp_pxe_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_dhcp_pxe_creds_op_vault: "Automation"
+unifi_network_dhcp_pxe_creds_username_field: "username"
+unifi_network_dhcp_pxe_creds_password_field: "password"
+
+# PXE values. next_server has no default — set it in host_vars to the IP
+# serving TFTP (nas-sdg's bond0/br0 alias). boot_filename defaults to the
+# UEFI variant; override with netboot.xyz.kpxe for legacy BIOS clients.
+unifi_network_dhcp_pxe_next_server: ""
+unifi_network_dhcp_pxe_boot_filename: "netboot.xyz.efi"

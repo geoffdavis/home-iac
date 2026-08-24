@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: geoffdavis
+  description: node_exporter + ipa-healthcheck textfile metrics on FreeIPA replica VMs
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["10"]
+dependencies: []

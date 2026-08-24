@@ -1,0 +1,13 @@
+---
+# node_exporter release vendored from upstream — EPEL10 does not package it
+# yet (checked live on Rocky 10.1, 2026-07-08). Bump version+checksum together.
+freeipa_metrics_node_exporter_version: "1.9.1"
+freeipa_metrics_node_exporter_sha256: "becb950ee80daa8ae7331d77966d94a611af79ad0d3307380907e0ec08f5b4e8"
+freeipa_metrics_port: 9100
+freeipa_metrics_textfile_dir: /var/lib/node_exporter/textfile
+# ipa-healthcheck cadence: it is not free (talks to 389-DS/CA); 30min is
+# plenty for cert-expiry/replication drift signals.
+freeipa_metrics_healthcheck_interval: 30min
+# netbird overlay health cadence — 1min like the NAS hosts: overlay outages
+# must surface before the replica stops being scrapable altogether.
+freeipa_metrics_netbird_interval: 1min
