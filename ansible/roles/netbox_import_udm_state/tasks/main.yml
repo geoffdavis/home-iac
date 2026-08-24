@@ -1,0 +1,191 @@
+---
+# netbox_import_udm_state: one-shot backfill, UDM -> NetBox.
+#
+# Flow:
+#   1. Resolve NetBox's write-scoped token + the UDM admin creds from
+#      1Password.
+#   2. Authenticate against the UDM (same cookie+CSRF flow as
+#      unifi_network_dns_record) and GET its current static-DNS list.
+#   3. Build the exclusion set of external-dns-owned names (ownership TXT
+#      markers), then the desired A/AAAA record set with that exclusion
+#      applied.
+#   4. Group by target address (several DNS names commonly share one IP --
+#      e.g. the nas-sdg/netbox mgmt aliases, or the *.admin/*.nas
+#      split-horizon wildcards); pick one representative dns_name per
+#      address, note the rest as aliases in the NetBox object's
+#      description (ipam.IPAddress has exactly one dns_name field -- see
+#      the spec's stated fallback limitation).
+#   5. Merge in the documented VLAN 10 "low address" list
+#      (defaults/main.yml), de-duplicated against addresses already
+#      covered by step 4.
+#   6. For each resulting desired IP address object: GET NetBox's existing
+#      object at that address, create (POST) if absent, update (PATCH) on
+#      drift, no-op on match. Never deletes.
+
+- name: "Fetch NetBox write-scoped backfill token from 1Password"
+  ansible.builtin.set_fact:
+    _nb_import_netbox_token: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_state_netbox_token_op_item,
+                vault=netbox_import_udm_state_netbox_token_op_vault,
+                field=netbox_import_udm_state_netbox_token_op_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: "Assert the NetBox backfill token was resolved"
+  ansible.builtin.assert:
+    that:
+      - _nb_import_netbox_token | length > 0
+    fail_msg: >-
+      No value came back from 1Password item
+      '{{ netbox_import_udm_state_netbox_token_op_item }}' (vault
+      '{{ netbox_import_udm_state_netbox_token_op_vault }}', field
+      '{{ netbox_import_udm_state_netbox_token_op_field }}'). That item
+      does not exist yet as of this role's initial commit -- see the
+      role README for how to mint a write-scoped v2 NetBox API token and
+      create it before running this playbook.
+
+- name: "Fetch UDM admin credentials from 1Password"
+  ansible.builtin.set_fact:
+    _nb_import_udm_username: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_state_udm_creds_op_item,
+                vault=netbox_import_udm_state_udm_creds_op_vault,
+                field=netbox_import_udm_state_udm_creds_username_field) }}
+    _nb_import_udm_password: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_state_udm_creds_op_item,
+                vault=netbox_import_udm_state_udm_creds_op_vault,
+                field=netbox_import_udm_state_udm_creds_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: "Authenticate against the UDM controller"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_state_udm_controller_url }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ _nb_import_udm_username }}"
+      password: "{{ _nb_import_udm_password }}"
+    validate_certs: "{{ netbox_import_udm_state_udm_validate_certs }}"
+    status_code: 200
+    return_content: false
+  register: _nb_import_udm_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+- name: "Capture UDM session cookie + CSRF token"
+  ansible.builtin.set_fact:
+    _nb_import_udm_cookie: "{{ _nb_import_udm_login.cookies_string }}"
+    _nb_import_udm_csrf: "{{ _nb_import_udm_login.x_csrf_token | default('') }}"
+  no_log: true
+
+- name: "Assert UDM CSRF token was returned"
+  ansible.builtin.assert:
+    that:
+      - _nb_import_udm_csrf | length > 0
+    fail_msg: "UDM login succeeded but no X-CSRF-Token header came back."
+
+- name: "GET the UDM's current static-DNS list"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_state_udm_controller_url }}/proxy/network/v2/api/site/{{ netbox_import_udm_state_udm_site }}/static-dns"
+    method: GET
+    headers:
+      Cookie: "{{ _nb_import_udm_cookie }}"
+      X-CSRF-Token: "{{ _nb_import_udm_csrf }}"
+    validate_certs: "{{ netbox_import_udm_state_udm_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _nb_import_udm_static_dns
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Build external-dns ownership-exclusion set from TXT markers"
+  ansible.builtin.set_fact:
+    _nb_import_exclusion_names: >-
+      {{
+        _nb_import_udm_static_dns.json
+        | selectattr('record_type', 'equalto', 'TXT')
+        | selectattr('value', 'search', 'heritage=external-dns')
+        | map(attribute='key')
+        | map('regex_replace', '^' + netbox_import_udm_state_externaldns_txt_prefix, '')
+        | list
+      }}
+
+- name: "Debug -- external-dns-owned names excluded from this backfill"
+  ansible.builtin.debug:
+    var: _nb_import_exclusion_names
+
+- name: "Build desired A/AAAA record list, excluding external-dns-owned names"
+  ansible.builtin.set_fact:
+    _nb_import_dns_records: >-
+      {{
+        _nb_import_udm_static_dns.json
+        | selectattr('record_type', 'in', ['A', 'AAAA'])
+        | rejectattr('key', 'in', _nb_import_exclusion_names)
+        | list
+      }}
+
+- name: "Group desired records by target address"
+  ansible.builtin.set_fact:
+    _nb_import_groups: "{{ _nb_import_dns_records | groupby('value') }}"
+
+- name: "Pick one representative dns_name (+ aliases) per address group"
+  ansible.builtin.set_fact:
+    _nb_import_dns_addresses: "{{ (_nb_import_dns_addresses | default([])) + [{'address': item.0, 'dns_name': _nb_import_representative, 'aliases': _nb_import_sorted_names | reject('equalto', _nb_import_representative) | list}] }}"
+  vars:
+    _nb_import_sorted_names: "{{ item.1 | map(attribute='key') | sort | list }}"
+    _nb_import_non_wildcard: "{{ _nb_import_sorted_names | reject('match', '^\\*\\.') | list }}"
+    _nb_import_representative: "{{ (_nb_import_non_wildcard if (_nb_import_non_wildcard | length > 0) else _nb_import_sorted_names) | first }}"
+  loop: "{{ _nb_import_groups }}"
+  loop_control:
+    label: "{{ item.0 }}"
+
+- name: "Merge in documented low-address entries not already covered by DNS import"
+  ansible.builtin.set_fact:
+    _nb_import_all_addresses: >-
+      {{
+        _nb_import_dns_addresses
+        + (netbox_import_udm_state_low_addresses
+           | rejectattr('address', 'in', (_nb_import_dns_addresses | map(attribute='address') | list))
+           | list)
+      }}
+
+- name: "Finalize each desired NetBox IP-address object (mask, status, description)"
+  ansible.builtin.set_fact:
+    _nb_import_final: "{{ (_nb_import_final | default([])) + [_nb_import_finalized] }}"
+  vars:
+    _nb_import_octet_key: "{{ (item.address.split('.')[0:3] | join('.')) + '.' }}"
+    _nb_import_mask: "{{ netbox_import_udm_state_vlan_prefix_lengths[_nb_import_octet_key] | default(32) }}"
+    _nb_import_aliases_note: >-
+      {{
+        ('aliases (not represented -- ipam.IPAddress has one dns_name field): ' + (item.aliases | join(', ')))
+        if (item.aliases | default([]) | length > 0) else ''
+      }}
+    _nb_import_finalized:
+      address: "{{ item.address }}/{{ _nb_import_mask }}"
+      dns_name: "{{ item.dns_name | default('') }}"
+      status: "{{ item.status | default('active') }}"
+      description: "{{ item.description | default(_nb_import_aliases_note) | default('Imported from UDM static-DNS by netbox_import_udm_state') }}"
+  loop: "{{ _nb_import_all_addresses }}"
+  loop_control:
+    label: "{{ item.address }}"
+
+- name: "Debug -- full desired NetBox IP-address set for this backfill"
+  ansible.builtin.debug:
+    var: _nb_import_final
+
+- name: "Reconcile each desired IP address object against NetBox"
+  ansible.builtin.include_tasks: reconcile_one.yml
+  loop: "{{ _nb_import_final }}"
+  loop_control:
+    loop_var: _nb_import_record
+    label: "{{ _nb_import_record.address }} ({{ _nb_import_record.dns_name | default('no dns_name') }})"
