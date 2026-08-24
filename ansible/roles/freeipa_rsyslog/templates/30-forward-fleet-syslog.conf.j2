@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Forward everything to the fleet syslog catcher as RFC5424/TCP —
+# RFC5424 timestamps carry an explicit UTC offset (TZ-proof parsing).
+# omfwd is built into rsyslog; the base /etc/rsyslog.conf owns all
+# module loading (imjournal included), so this drop-in adds ONLY the
+# forwarding action. Bounded in-memory queue + infinite retry: the
+# catcher being down never wedges local logging, and low-severity
+# messages are shed first under backlog.
+action(type="omfwd"
+       target="{{ freeipa_rsyslog_target }}"
+       port="{{ freeipa_rsyslog_port }}"
+       protocol="tcp"
+       template="RSYSLOG_SyslogProtocol23Format"
+       queue.type="LinkedList"
+       queue.size="10000"
+       queue.discardMark="8000"
+       queue.discardSeverity="6"
+       action.resumeRetryCount="-1"
+       action.resumeInterval="10")

@@ -1,0 +1,135 @@
+# unifi_network_dhcp_pxe
+
+Idempotent management of DHCP PXE-boot Options 66 (next-server / TFTP
+server) and 67 (boot filename) on one or more named UniFi Networks via
+the UDM Pro / UniFi Network controller's REST API. The role does a
+single GET against `/rest/networkconf`, then loops a per-network diff +
+partial PUT over every name in `unifi_network_dhcp_pxe_target_network_names`.
+
+Mirrors the existing [`cloudflare_tunnel_ingress`](../cloudflare_tunnel_ingress/README.md)
+role's pattern (controller-side, `delegate_to: localhost`, GET → diff
+→ PUT only on drift, post-PUT re-query + assert outside `--check`).
+
+## Why a role
+
+UDM Pro DHCP options are click-ops by default. Putting them in Ansible
+keeps the PXE next-server (the IP serving the netbootxyz TFTP server)
+declarative, so it doesn't silently drift or leave DHCP pointing at a
+dead server. Set `unifi_network_dhcp_pxe_next_server` in host_vars (it
+has no default).
+
+## Credentials
+
+The role expects a single 1Password item with `username` + `password`
+fields. Default location: vault `Automation`, item
+`UniFi UDM Pro (ansible)`. Override per-host via
+`unifi_network_dhcp_pxe_creds_op_*`.
+
+Create the credential once via the UniFi UI: Settings → Admins &
+Users → Create New Admin. Role "Limited Admin" with site permissions
+on the target site is sufficient (Owner works but is wider than
+needed).
+
+## Auth flow
+
+UDM Pro uses cookie + CSRF, not bearer tokens:
+
+1. `POST /api/auth/login` with `{username, password}` →
+   `Set-Cookie: TOKEN=...` + `X-CSRF-Token: ...` response header
+2. All subsequent calls include `Cookie:` (rebuilt from
+   `cookies_string`) and `X-CSRF-Token:` headers
+3. Best-effort `POST /api/auth/logout` at the end (failure is ignored
+   — the PXE work is already done if we got there)
+
+## API endpoints
+
+- `GET /proxy/network/api/s/<site>/rest/networkconf` — list networks
+  on the site. Response shape: `{ data: [<network>, ...] }`.
+- `PUT /proxy/network/api/s/<site>/rest/networkconf/<id>` — partial
+  update of one network. The controller merges the supplied fields
+  into the stored config; unsupplied fields are preserved. The role
+  PUTs only `{dhcpd_boot_enabled, dhcpd_boot_server, dhcpd_boot_filename}`
+  so it can't accidentally rewrite VLAN / gateway / DNS-forwarder
+  fields it doesn't manage.
+
+## Drift handling
+
+`_udm_pxe_needs_update` is computed by comparing the current values
+of the three `dhcpd_boot_*` fields against the desired tuple. A PUT
+only fires when they differ. After PUT, the role re-queries the
+network and asserts the new values stick — guards against the rare
+case where the controller returns 200 but persists nothing (e.g.
+mid-config-save race with a concurrent UI edit).
+
+`--check` mode runs the diff debug task but skips the PUT and the
+verify-assert (the `uri` module no-ops non-GET in check mode, so
+verifying would always fail on a drifted host).
+
+## Variables
+
+See `defaults/main.yml` for the full list. The interesting ones:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `unifi_network_dhcp_pxe_enabled` | `false` | Opt-in gate. |
+| `unifi_network_dhcp_pxe_controller_url` | `https://172.29.50.1` | UDM Pro base URL. |
+| `unifi_network_dhcp_pxe_validate_certs` | `false` | UDM ships a self-signed cert by default. |
+| `unifi_network_dhcp_pxe_site` | `default` | UniFi site identifier (URL bar: `/manage/site/<this>/dashboard`). |
+| `unifi_network_dhcp_pxe_target_network_names` | `[]` | List of UDM Network display names to reconcile PXE on (case-sensitive; e.g. `["Private", "IoT"]`). |
+| `unifi_network_dhcp_pxe_next_server` | `""` (set in host_vars) | DHCP Option 66 value — the TFTP server IP. |
+| `unifi_network_dhcp_pxe_boot_filename` | `netboot.xyz.efi` | DHCP Option 67 value (UEFI clients). |
+
+## Failure modes worth knowing
+
+- **CSRF token missing.** Very new UniFi OS releases have occasionally
+  shifted the auth flow. The role asserts the CSRF token was returned
+  and fail-fasts with a `curl` snippet so you can inspect the actual
+  response headers.
+- **Network not found.** The fail message lists the requested names,
+  the names that WERE found, the missing names, and every available
+  network on the site — so you can fix the host_vars without going
+  back to the UI. Most common cause is a name typo (case matters) or
+  a non-default `unifi_network_dhcp_pxe_site` (defaults to "default";
+  the site identifier in multi-site installs is whatever shows up in
+  the controller URL bar).
+- **Cert validation failure.** The role defaults
+  `validate_certs: false` because UDM Pro ships self-signed. If
+  you've installed a trusted cert (Caddy / cert-manager / manual
+  upload), flip it to `true` per host.
+
+## Test plan
+
+```bash
+# Dry-run: shows current vs desired without applying
+uv run ansible-playbook playbooks/unifi-network.yml \
+  --limit nas-sdg --check
+
+# Apply
+uv run ansible-playbook playbooks/unifi-network.yml --limit nas-sdg
+
+# Verify from the UDM UI: for each name in
+# `unifi_network_dhcp_pxe_target_network_names`, open
+# Settings → Networks → <name> → DHCP and scroll to "Network Boot".
+# Each should show Next Server = the role's `next_server` value and
+# Boot File = `netboot.xyz.efi` (or whatever `boot_filename` is set
+# to).
+
+# Or via curl directly. Keep TARGETS in sync with the host_vars value
+# of `unifi_network_dhcp_pxe_target_network_names` — there's no shared
+# source of truth here, so a fleet edit to the list means updating
+# this snippet too (or extracting it via:
+#   uv run ansible -i ansible/inventory.yml -m debug \
+#     -a 'var=unifi_network_dhcp_pxe_target_network_names' nas-sdg
+# and piping into jq).
+COOKIE=$(curl -sk -c - -X POST "https://172.29.50.1/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"...","password":"..."}' | grep TOKEN | awk '{print "TOKEN="$7}')
+
+TARGETS='["Private","IoT","NoT","Management"]'
+
+curl -sk "https://172.29.50.1/proxy/network/api/s/default/rest/networkconf" \
+  -H "Cookie: $COOKIE" \
+  | jq --argjson targets "$TARGETS" \
+       '.data[] | select(.name as $n | $targets | index($n))
+        | {name, dhcpd_boot_enabled, dhcpd_boot_server, dhcpd_boot_filename}'
+```

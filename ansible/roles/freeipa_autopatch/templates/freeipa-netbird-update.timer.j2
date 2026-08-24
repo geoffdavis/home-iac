@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily netbird upgrade (freeipa_autopatch)
+
+[Timer]
+OnCalendar={{ freeipa_autopatch_netbird_oncalendar }}
+RandomizedDelaySec={{ freeipa_autopatch_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,51 @@
+---
+# unifi_network_dns_record: idempotent management of static DNS records
+# on a UDM Pro / UniFi Network controller via the REST API. Runs
+# entirely controller-side (delegate_to: localhost).
+#
+# Mirrors the unifi_network_port_forward role's structure: same UDM auth
+# flow (cookie + CSRF), same GET→diff→mutate pattern, same 1Password
+# credential lookup convention. One API difference: static DNS lives
+# under the *v2* API (/proxy/network/v2/api/site/<site>/static-dns),
+# whose list endpoint returns a bare JSON array instead of the v1
+# {data: [...]} envelope.
+
+# Opt-in per host. Default false so hosts with no DNS-record
+# requirements inherit a no-op.
+unifi_network_dns_record_enabled: false
+
+# Controller base URL. Shares the default with unifi_network_port_forward.
+unifi_network_dns_record_controller_url: "https://172.29.50.1"
+
+# Cert validation. UDM Pro ships with a self-signed cert by default.
+unifi_network_dns_record_validate_certs: false
+
+# UniFi site identifier.
+unifi_network_dns_record_site: "default"
+
+# 1Password lookup for the controller's admin credentials. Shares the
+# same item as the other unifi_network_* roles — a single "Limited
+# Admin" UniFi account covers them all.
+unifi_network_dns_record_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_dns_record_creds_op_vault: "Automation"
+unifi_network_dns_record_creds_username_field: "username"
+unifi_network_dns_record_creds_password_field: "password"
+
+# List of static DNS records to reconcile. Each entry:
+#
+#   record_type: string — "A" | "AAAA" | "CNAME" | "MX" | "TXT" | ...
+#   key:         string — the record's FQDN (idempotency key, with
+#                         record_type)
+#   value:       string — record target (IP for A, hostname for CNAME, ...)
+#   enabled:     bool   — default true
+#   state:       string — "present" (default) or "absent"
+#
+# Identity for idempotency is key + record_type (the v2 schema has no
+# name/description field). value + enabled are compared for drift.
+#
+# Example — publish the central syslog endpoint in the UDM zone:
+#   unifi_network_dns_record_records:
+#     - record_type: CNAME
+#       key: syslog.home.geoffdavis.com
+#       value: nas-sdg.iot.home.geoffdavis.com
+unifi_network_dns_record_records: []

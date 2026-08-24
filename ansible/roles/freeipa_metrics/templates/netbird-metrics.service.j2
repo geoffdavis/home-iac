@@ -1,0 +1,8 @@
+# {{ ansible_managed }} — freeipa_metrics role (ugreen-nas-compose)
+[Unit]
+Description=netbird overlay health -> node_exporter textfile metrics
+
+[Service]
+Type=oneshot
+# root: netbird status talks to the daemon socket
+ExecStart=/usr/local/bin/netbird-metrics

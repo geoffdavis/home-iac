@@ -1,0 +1,12 @@
+# {{ ansible_managed }} — freeipa_metrics role (ugreen-nas-compose)
+[Unit]
+Description=periodic netbird overlay health metrics refresh
+
+[Timer]
+# 1min cadence (matching the NAS hosts): overlay outages must surface fast —
+# an unreachable replica stops being scrapable shortly after this fires.
+OnBootSec=2min
+OnUnitActiveSec={{ freeipa_metrics_netbird_interval }}
+
+[Install]
+WantedBy=timers.target

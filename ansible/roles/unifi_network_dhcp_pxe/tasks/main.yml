@@ -1,0 +1,231 @@
+---
+# unifi_network_dhcp_pxe: idempotent DHCP PXE-boot reconciliation
+# against the UDM Pro / UniFi Network controller's REST API.
+#
+# Flow:
+#   1. Pre-flight assert: next_server + boot_filename + target_network_names
+#      are non-empty (the desired payload hardcodes
+#      dhcpd_boot_enabled: true, so there's no separate "enabled"
+#      knob to guard)
+#   2. Resolve admin creds from 1Password (per-host fetch — see
+#      cloudflare_tunnel_ingress task-2 header for the run_once-doesn't-help
+#      explanation)
+#   3. Authenticate (POST /api/auth/login → cookie + X-CSRF-Token)
+#   4. GET /rest/networkconf once (returns ALL networks on the site),
+#      then filter by display name against
+#      unifi_network_dhcp_pxe_target_network_names
+#   5. Assert every requested network was found (fail loudly with the
+#      list of available + missing names so the operator can fix the
+#      host_vars without going to the UI)
+#   6. For each found network: compute current vs desired PXE,
+#      PUT only on drift, re-GET + assert in non-check mode
+#      (factored into tasks/reconcile_one.yml, included in a loop)
+
+- name: "Block — UniFi DHCP PXE reconciliation"
+  when: unifi_network_dhcp_pxe_enabled | bool
+  block:
+    # Jinja's `is sequence` matches strings AND mappings, so neither
+    # `unifi_network_dhcp_pxe_target_network_names: "Private"` nor
+    # `unifi_network_dhcp_pxe_target_network_names: {Private: true}`
+    # would be caught without explicit `is not string` + `is not mapping`
+    # guards (the mapping case would even partially "work" because
+    # selectattr's `in` test iterates dict keys, but the wrong shape
+    # bypasses item validation and breaks the duplicate-detection
+    # contract). The `reject('string') | length == 0` line then asserts
+    # every item is itself a string.
+    - name: "Pre-flight — assert next_server + boot_filename + target_network_names are set"
+      ansible.builtin.assert:
+        that:
+          - unifi_network_dhcp_pxe_next_server is string
+          - unifi_network_dhcp_pxe_next_server | length > 0
+          - unifi_network_dhcp_pxe_boot_filename is string
+          - unifi_network_dhcp_pxe_boot_filename | length > 0
+          - unifi_network_dhcp_pxe_target_network_names is sequence
+          - unifi_network_dhcp_pxe_target_network_names is not string
+          - unifi_network_dhcp_pxe_target_network_names is not mapping
+          - unifi_network_dhcp_pxe_target_network_names | length > 0
+          - (unifi_network_dhcp_pxe_target_network_names
+             | reject('string') | list | length) == 0
+        fail_msg: |
+          One of next_server / boot_filename / target_network_names is unset,
+          empty, or wrong type. Set unifi_network_dhcp_pxe_next_server
+          explicitly in host_vars to the IP serving TFTP.
+          target_network_names must be a non-empty LIST of
+          string UniFi network display names (e.g. ["Private", "IoT"]) —
+          bare strings, dicts/mappings, and lists containing non-string
+          items are all rejected to catch common YAML-quoting mistakes
+          early.
+
+    # Per-host 1P lookup (same rationale as cloudflare_tunnel_ingress —
+    # set_fact + run_once would only define the fact on the first host,
+    # not subsequent ones, since facts are host-scoped).
+    - name: "Fetch UniFi admin credentials from 1Password"
+      ansible.builtin.set_fact:
+        _udm_username: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dhcp_pxe_creds_op_item,
+                    vault=unifi_network_dhcp_pxe_creds_op_vault,
+                    field=unifi_network_dhcp_pxe_creds_username_field) }}
+        _udm_password: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dhcp_pxe_creds_op_item,
+                    vault=unifi_network_dhcp_pxe_creds_op_vault,
+                    field=unifi_network_dhcp_pxe_creds_password_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+
+    # UniFi OS login. Returns:
+    #   - Set-Cookie: TOKEN=<jwt>; ...
+    #   - Header: X-CSRF-Token: <token>
+    # Both are required for subsequent API calls. The `uri` module
+    # captures Set-Cookie into the response's `cookies_string` field
+    # (single header line ready to re-send), and headers come through
+    # under .<resp>.x_csrf_token (lowercased + underscored).
+    #
+    # check_mode: false — `uri` skips non-GET requests under --check,
+    # which would leave `_udm_login` empty and break the downstream
+    # `cookies_string` / `x_csrf_token` reads, defeating the diff
+    # preview the README/PR test plan promise. The login is read-only
+    # from the operator's perspective (creates a session token on the
+    # controller, doesn't change any settings), so forcing it through
+    # in check mode is safe; `changed_when: false` keeps the dry-run
+    # change-count honest.
+    - name: "Authenticate against the UDM controller"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dhcp_pxe_controller_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ _udm_username }}"
+          password: "{{ _udm_password }}"
+        validate_certs: "{{ unifi_network_dhcp_pxe_validate_certs }}"
+        status_code: 200
+        return_content: false
+      register: _udm_login
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+
+    # The `uri` module exposes response headers as register attributes,
+    # lowercased with hyphens → underscores. UDM's login response sets
+    # `X-CSRF-Token: <token>` which surfaces here as `.x_csrf_token`.
+    - name: "Capture session cookie + CSRF token"
+      ansible.builtin.set_fact:
+        _udm_cookie: "{{ _udm_login.cookies_string }}"
+        _udm_csrf: "{{ _udm_login.x_csrf_token | default('') }}"
+      no_log: true
+
+    - name: "Assert CSRF token was returned"
+      ansible.builtin.assert:
+        that:
+          - _udm_csrf | length > 0
+        fail_msg: |
+          UDM login succeeded but no X-CSRF-Token header came back. UniFi
+          OS versions before ~2.5 returned this on every response; very
+          new versions may have changed the auth flow. Check the response
+          headers manually:
+            curl -ks {{ unifi_network_dhcp_pxe_controller_url }}/api/auth/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"...","password":"..."}' -i
+          and adjust this role's header capture if the field name changed.
+
+    - name: "GET current network configurations"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dhcp_pxe_controller_url }}/proxy/network/api/s/{{ unifi_network_dhcp_pxe_site }}/rest/networkconf"
+        method: GET
+        headers:
+          Cookie: "{{ _udm_cookie }}"
+          X-CSRF-Token: "{{ _udm_csrf }}"
+        validate_certs: "{{ unifi_network_dhcp_pxe_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_networks
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Find the target networks by display name"
+      ansible.builtin.set_fact:
+        _udm_matching_networks: >-
+          {{ _udm_networks.json.data
+             | selectattr('name', 'in', unifi_network_dhcp_pxe_target_network_names)
+             | list }}
+        _udm_missing_names: >-
+          {{ unifi_network_dhcp_pxe_target_network_names
+             | difference(
+                 _udm_networks.json.data
+                 | selectattr('name', 'in', unifi_network_dhcp_pxe_target_network_names)
+                 | map(attribute='name') | list) }}
+
+    # Set-membership check, not count comparison: counts can match
+    # when the controller returns duplicates for one requested name
+    # while missing another (e.g. two "Private" + zero "IoT" still
+    # gives length == 2 against target ["Private","IoT"], silently
+    # passing the old guard while IoT is missing). Asserting that
+    # `target | difference(found_names) | length == 0` (the missing-
+    # names list is empty) catches this and also handles operator-
+    # supplied duplicates in the target list (e.g. ["Private",
+    # "Private"]) cleanly — the difference is empty in both the
+    # "duplicates ok" and "all found" cases.
+    - name: "Assert every requested network was found"
+      ansible.builtin.assert:
+        that:
+          - _udm_missing_names | length == 0
+        fail_msg: |
+          Some requested networks are not present on site
+          '{{ unifi_network_dhcp_pxe_site }}'.
+
+          Requested: {{ unifi_network_dhcp_pxe_target_network_names }}
+          Found:     {{ _udm_matching_networks | map(attribute='name') | list }}
+          Missing:   {{ _udm_missing_names }}
+
+          Available networks on this site:
+            {{ _udm_networks.json.data | map(attribute='name') | list }}
+
+          Set `unifi_network_dhcp_pxe_target_network_names` to a subset of
+          the above (case-sensitive). If the site identifier is wrong, set
+          `unifi_network_dhcp_pxe_site` (default "default") to whatever
+          appears in the UDM UI URL bar: /manage/site/<this>/dashboard.
+
+    - name: "Compute desired PXE field values"
+      ansible.builtin.set_fact:
+        _udm_desired_pxe:
+          dhcpd_boot_enabled: true
+          dhcpd_boot_server: "{{ unifi_network_dhcp_pxe_next_server }}"
+          dhcpd_boot_filename: "{{ unifi_network_dhcp_pxe_boot_filename }}"
+
+    # Per-network reconciliation. Factored out so we don't need to
+    # juggle list-of-{network, current, needs_update} accumulators in
+    # the main flow. Each include_tasks invocation reads the loop var
+    # _udm_network and does the diff / PUT / verify for that network.
+    - name: "Reconcile PXE options on each target network"
+      ansible.builtin.include_tasks: reconcile_one.yml
+      loop: "{{ _udm_matching_networks }}"
+      loop_control:
+        loop_var: _udm_network
+        label: "{{ _udm_network.name }}"
+
+    # Best-effort logout to invalidate the session token immediately
+    # rather than waiting for it to expire. Don't fail the role if
+    # logout fails — the role's primary work (PXE reconciliation) is
+    # already done. check_mode: false so --check runs also clean up
+    # after themselves (symmetric with the login force-run above);
+    # `failed_when: false` swallows any error regardless.
+    - name: "Logout (best-effort session cleanup)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dhcp_pxe_controller_url }}/api/auth/logout"
+        method: POST
+        headers:
+          Cookie: "{{ _udm_cookie }}"
+          X-CSRF-Token: "{{ _udm_csrf }}"
+        validate_certs: "{{ unifi_network_dhcp_pxe_validate_certs }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+      changed_when: false

@@ -1,0 +1,69 @@
+---
+# Default VM sizing — overrideable per-host in host_vars/nas-<site>.yml.
+# The workload is a single-realm IPA replica + netbird daemon: 4GB RAM is
+# the IPA-docs-recommended minimum; 30GB disk fits Rocky 10 + IPA install
+# state + several months of logs + IPA backups; 2 vCPU is enough for a
+# low-write replica.
+#
+# All role vars are nixos_freeipa_vm_*. The site-derived identity vars
+# (name / fqdn / peer / setup-key item / sha256) live in
+# group_vars/nas_nixos.yml.
+nixos_freeipa_vm_vcpus: 2
+nixos_freeipa_vm_memory: "4GB"
+nixos_freeipa_vm_disk_size: "30GB"
+nixos_freeipa_vm_pool: "nvme"
+
+# Rocky Linux 10 GenericCloud qcow2 image. Cached on the NixOS host at
+# the mountpoint of {{ pool }}/{{ image_cache_dataset }} after the first
+# download; subsequent VM creations skip re-download (get_url
+# short-circuits when the checksum matches the cached file).
+#
+# Pin to a specific point release (NOT `latest`) for reproducibility — the
+# `*.latest.*` filename in the URL changes on every Rocky point release,
+# which would silently churn the image between runs even when sha256 is
+# correctly set. Bump together with the sha256 pin in
+# group_vars/nas_nixos.yml.
+nixos_freeipa_vm_image_url: "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2"
+
+# Operator MUST pin (group_vars/nas_nixos.yml carries the fleet-wide pin).
+# Preflight asserts non-empty before any state-changing tasks run;
+# defaults to empty string so a missing pin fails loudly instead of
+# silently fetching arbitrary upstream bytes.
+# Fetch the canonical hash from:
+#   https://download.rockylinux.org/pub/rocky/10/images/x86_64/CHECKSUM
+nixos_freeipa_vm_image_sha256: ""
+
+# Dataset (relative to the pool) where the cached qcow2 + staged seed ISO
+# live. Created by preflight if absent.
+nixos_freeipa_vm_image_cache_dataset: "iso"
+
+# libvirt network the VM's NIC attaches to. The stock NAT network is
+# sufficient: the VM is a netbird peer and IPA binds the OVERLAY IP, so
+# nothing on the LAN ever needs to reach the VM directly. A LAN bridge
+# (for overlay-less access) is a deferred bench task — see README.md.
+nixos_freeipa_vm_libvirt_network: "default"
+
+# Netbird management URL — same as the host netbird role's default; assumes
+# self-hosted may eventually replace api.netbird.io but currently use the SaaS.
+nixos_freeipa_vm_netbird_management_url: "https://api.netbird.io"
+
+# 1P vault containing the secrets we fetch (setup key, ssh pubkey).
+nixos_freeipa_vm_op_vault: "nas-overlay"
+
+# Stable MAC address for the VM's VIRTIO NIC. Default null — the role
+# computes a deterministic MAC from the VM name (`00:a0:98:` prefix +
+# first 6 hex chars of sha256(name) as the suffix octets), so a replica
+# keeps a stable MAC. libvirt persists the MAC in the domain XML; the
+# determinism is for fleet consistency + ARP/DHCP-table sanity.
+# Override per-host only when importing an existing VM with a specific
+# MAC or to resolve a collision (24-bit suffix space).
+nixos_freeipa_vm_nic_mac: null
+
+# Optional operator debug password for the `rocky` user. Default unset
+# (lock_passwd: true, no console login). Set ONLY when expecting to need
+# a `virsh console` fallback for hands-on debugging — typical case is a
+# botched IPA install that breaks firewalld or netbird, leaving SSH
+# unreachable. Set per-host in host_vars/<host>.yml from a 1P-fetched
+# secret, never commit literal passwords. Consumed by the role's
+# cloud-init template (templates/cloud-init-userdata.yaml.j2).
+nixos_freeipa_vm_operator_debug_password: null

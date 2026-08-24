@@ -1,0 +1,6 @@
+---
+# Fleet syslog catcher (nix-personal#200 — NAS half is
+# modules/nas/syslog-forward.nix there; this role is the VM half).
+# The DNS record for the catcher lives in playbooks/freeipa-dns-records.yml.
+freeipa_rsyslog_target: "syslog.ipa.geoffdavis.com"
+freeipa_rsyslog_port: 514

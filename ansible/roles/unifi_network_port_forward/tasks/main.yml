@@ -1,0 +1,121 @@
+---
+# unifi_network_port_forward: idempotent port-forward reconciliation
+# against the UDM Pro / UniFi Network controller's REST API.
+#
+# Flow:
+#   1. Pre-flight assert: rules list is non-empty and well-formed
+#   2. Resolve admin creds from 1Password
+#   3. Authenticate (POST /api/auth/login → cookie + X-CSRF-Token)
+#   4. GET /rest/portforward (all existing rules on the site)
+#   5. For each rule in unifi_network_port_forward_rules:
+#        - state=present: POST (create) or PUT (update on drift)
+#        - state=absent:  DELETE if found, no-op if already absent
+#   6. Best-effort logout
+
+- name: "Block — UniFi port-forward reconciliation"
+  when: unifi_network_port_forward_enabled | bool
+  block:
+    - name: "Pre-flight — assert rules list is a non-empty list of mappings"
+      ansible.builtin.assert:
+        that:
+          - unifi_network_port_forward_rules is sequence
+          - unifi_network_port_forward_rules is not string
+          - unifi_network_port_forward_rules is not mapping
+          - unifi_network_port_forward_rules | length > 0
+          - (unifi_network_port_forward_rules | selectattr('name', 'undefined') | list | length) == 0
+          - (unifi_network_port_forward_rules | selectattr('proto', 'undefined') | list | length) == 0
+          - (unifi_network_port_forward_rules | selectattr('dst_port', 'undefined') | list | length) == 0
+          - (unifi_network_port_forward_rules | selectattr('fwd', 'undefined') | list | length) == 0
+          - (unifi_network_port_forward_rules | selectattr('fwd_port', 'undefined') | list | length) == 0
+        fail_msg: |
+          unifi_network_port_forward_rules must be a non-empty list of mappings,
+          each with at least: name, proto, dst_port, fwd, fwd_port.
+
+    - name: "Fetch UniFi admin credentials from 1Password"
+      ansible.builtin.set_fact:
+        _udm_pf_username: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_port_forward_creds_op_item,
+                    vault=unifi_network_port_forward_creds_op_vault,
+                    field=unifi_network_port_forward_creds_username_field) }}
+        _udm_pf_password: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_port_forward_creds_op_item,
+                    vault=unifi_network_port_forward_creds_op_vault,
+                    field=unifi_network_port_forward_creds_password_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+
+    - name: "Authenticate against the UDM controller"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_port_forward_controller_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ _udm_pf_username }}"
+          password: "{{ _udm_pf_password }}"
+        validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+        status_code: 200
+        return_content: false
+      register: _udm_pf_login
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+
+    - name: "Capture session cookie + CSRF token"
+      ansible.builtin.set_fact:
+        _udm_pf_cookie: "{{ _udm_pf_login.cookies_string }}"
+        _udm_pf_csrf: "{{ _udm_pf_login.x_csrf_token | default('') }}"
+      no_log: true
+
+    - name: "Assert CSRF token was returned"
+      ansible.builtin.assert:
+        that:
+          - _udm_pf_csrf | length > 0
+        fail_msg: |
+          UDM login succeeded but no X-CSRF-Token header came back.
+          Check the auth flow manually:
+            curl -ks {{ unifi_network_port_forward_controller_url }}/api/auth/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"...","password":"..."}' -i
+
+    - name: "GET current port-forward rules"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_port_forward_controller_url }}/proxy/network/api/s/{{ unifi_network_port_forward_site }}/rest/portforward"
+        method: GET
+        headers:
+          Cookie: "{{ _udm_pf_cookie }}"
+          X-CSRF-Token: "{{ _udm_pf_csrf }}"
+        validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_pf_existing
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Reconcile each port-forward rule"
+      ansible.builtin.include_tasks: reconcile_one.yml
+      loop: "{{ unifi_network_port_forward_rules }}"
+      loop_control:
+        loop_var: _udm_pf_rule
+        label: "{{ _udm_pf_rule.name }} ({{ _udm_pf_rule.state | default('present') }})"
+
+    - name: "Logout (best-effort session cleanup)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_port_forward_controller_url }}/api/auth/logout"
+        method: POST
+        headers:
+          Cookie: "{{ _udm_pf_cookie }}"
+          X-CSRF-Token: "{{ _udm_pf_csrf }}"
+        validate_certs: "{{ unifi_network_port_forward_validate_certs }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+      changed_when: false

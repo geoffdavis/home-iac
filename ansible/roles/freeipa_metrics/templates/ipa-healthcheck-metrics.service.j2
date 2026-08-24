@@ -1,0 +1,8 @@
+# {{ ansible_managed }} — freeipa_metrics role (ugreen-nas-compose)
+[Unit]
+Description=ipa-healthcheck -> node_exporter textfile metrics
+
+[Service]
+Type=oneshot
+# root: ipa-healthcheck reads DS/CA/keytab state
+ExecStart=/usr/local/bin/ipa-healthcheck-metrics
