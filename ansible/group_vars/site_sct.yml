@@ -1,0 +1,10 @@
+---
+# Per-site group_vars for the Scottsdale (sct) site.
+#
+# Members (per inventory.yml `site_sct` group):
+#   - nas-sct  (TrueNAS host)
+#   - ipa-sct  (FreeIPA replica VM running on nas-sct)
+#
+# See ansible/group_vars/site_sdg.yml for the design rationale on
+# why `site` lives in per-site group_vars rather than each host_vars.
+site: "sct"

@@ -1,0 +1,16 @@
+---
+# Deploys the freeipa_rsyslog role to every replica VM: journald→fleet
+# syslog catcher forwarding as RFC5424/TCP + UTC timezone pin (the VM
+# half of nix-personal#200; the NAS half is modules/nas/syslog-forward.nix
+# there). Idempotent; safe to re-run anytime.
+#
+# Usage:
+#   cd ansible && uv run ansible-playbook -i inventory.yml \
+#     playbooks/freeipa-rsyslog.yml --private-key ~/.ssh/op-ansible-ssh-key.pub
+
+- name: FreeIPA replica syslog forwarding (rsyslog → fleet catcher) + UTC pin
+  hosts: ipa_replicas
+  become: true
+  gather_facts: false
+  roles:
+    - freeipa_rsyslog

@@ -1,0 +1,16 @@
+---
+# IPA replica at SCT. Joins via ipaclient_use_otp: true — the ipareplica
+# role mints its own OTP at install time by talking back to ipa-sdg as
+# admin. Replica installs are serial: 1 to avoid the replication-agreement
+# creation race.
+#
+# Vars supplied by group membership:
+#   - ipa_replicas:  freeipa_server_fqdn, freeipa_netbird_peer_name,
+#                    ipa_realm, ipa_domain, ipa_role=replica,
+#                    ansible_become*, SSH options
+#   - ipa_secondary: (no extra vars at present; group exists for
+#                    inventory grouping + the freeipa-install.yml
+#                    `serial: 1` join sequencing)
+#
+# This host_vars file is intentionally empty — every var that was here
+# is now group-derived.

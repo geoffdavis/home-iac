@@ -1,0 +1,34 @@
+---
+# group_vars for FreeIPA replica VMs (Rocky Linux 10 libvirt/KVM VMs).
+# Inherited by ipa-sdg, ipa-sct, ipa-cin via the ipa_replicas group.
+# (Pivoted from Incus to libvirt/KVM on 2026-05-18; see role README.)
+
+# SSH options: cloud-init regenerates host keys on first boot, so strict
+# host-key checking would fail. VMs are cattle (rebuilds happen), and
+# netbird is the authentication boundary — any traffic reaching the
+# overlay IP is already inside the trust perimeter. This group_vars-scoped
+# `ansible_ssh_common_args` only applies to ipa_replicas, NOT to the
+# TrueNAS hosts (which keep normal strict checking).
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+# Realm + domain inherited by every replica.
+ipa_realm: "IPA.GEOFFDAVIS.COM"
+ipa_domain: "ipa.geoffdavis.com"
+
+# Per-replica identity, derived from the inventory_hostname convention
+# (`ipa-<site>` for every replica) plus `ipa_domain` above. Avoids
+# duplicating these three identical-shape strings across each
+# host_vars/ipa-<site>.yml. If a replica ever deviates from the
+# `ipa-<site>` convention, override these in host_vars.
+freeipa_server_fqdn: "{{ inventory_hostname }}.{{ ipa_domain }}"
+freeipa_netbird_peer_name: "{{ inventory_hostname }}-replica"
+
+# Default IPA-install role for every replica is `replica`; the bootstrap
+# replica (ipa-sdg, in the `ipa_bootstrap` subgroup) overrides this to
+# `bootstrap` via group_vars/ipa_bootstrap.yml. Ansible's group-precedence
+# rules pick the subgroup value, so the bootstrap host gets the right role.
+ipa_role: "replica"
+
+# Become defaults — ipaserver / ipareplica roles need root.
+ansible_become: true
+ansible_become_method: sudo

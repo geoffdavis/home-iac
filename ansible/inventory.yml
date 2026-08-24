@@ -1,0 +1,74 @@
+all:
+  children:
+    # nas_nixos: the NAS hosts, all running NixOS (OS config lives in the
+    # nix-personal repo). This repo only orchestrates the FreeIPA replica
+    # VM provisioning + day-2 FreeIPA ops, and the UDM network reconciliation,
+    # that ansible still owns. Connection — the dedicated `ansible` service
+    # user + become + op-ansible key — comes from group_vars/nas_nixos.yml.
+    nas_nixos:
+      hosts:
+        nas-cin:
+          ansible_host: nas-cin.netbird.cloud
+        nas-sct:
+          ansible_host: nas-sct.netbird.cloud
+        nas-sdg:
+          # Hub — reachable on the LAN from the controller.
+          ansible_host: 172.29.50.20
+
+    ipa_replicas:
+      # FreeIPA replica VMs — libvirt/KVM guests on the NixOS hosts,
+      # provisioned by the nixos_freeipa_vm role (playbooks/nixos-freeipa-vm.yml).
+      # ansible_host is the netbird FQDN (resolves once the VM's netbird peer
+      # registers); ansible_user is rocky (cloud-init, passwordless sudo).
+      #
+      # IMPORTANT: do NOT add a host here until nixos-freeipa-vm.yml has
+      # provisioned + made reachable the corresponding VM.
+      hosts:
+        ipa-sdg:
+          ansible_host: ipa-sdg-replica.netbird.cloud
+          ansible_user: rocky
+        ipa-sct:
+          ansible_host: ipa-sct-replica.netbird.cloud
+          ansible_user: rocky
+        ipa-cin:
+          ansible_host: ipa-cin-replica.netbird.cloud
+          ansible_user: rocky
+      children:
+        # ipa_bootstrap: the single replica that runs --external-ca through
+        # the XCA ceremony. Always ipa-sdg per design.
+        ipa_bootstrap:
+          hosts:
+            ipa-sdg:
+        # ipa_secondary: replicas that join the existing realm via OTP.
+        ipa_secondary:
+          hosts:
+            ipa-sct:
+            ipa-cin:
+
+    # Site groups: cross-cutting dimension orthogonal to the functional groups
+    # above. Each host belongs to BOTH its functional group AND its site group;
+    # site group_vars declare `site: <code>` once and playbooks reference
+    # `{{ site }}` instead of re-deriving it from inventory_hostname.
+    #
+    # Adding a new site: create group_vars/site_<code>.yml with `site: <code>`,
+    # add a site_<code> entry here, list the per-site hosts.
+    #
+    # NOTE: ugreen-nas-compose's site groups also carry oob_kvm (JetKVM)
+    # members — deliberately dropped here. Task 1 of
+    # docs/superpowers/plans/2026-08-21-netbox-udm-sync.md scopes this
+    # migration to exactly the seven roles it names; the JetKVM
+    # out-of-band-console tooling (playbooks/jetkvm-netbird-update.yml,
+    # the oob_kvm inventory group, scripts/cf-ssh.sh) isn't one of them
+    # and stays in ugreen-nas-compose for now.
+    site_sdg:
+      hosts:
+        nas-sdg:
+        ipa-sdg:
+    site_sct:
+      hosts:
+        nas-sct:
+        ipa-sct:
+    site_cin:
+      hosts:
+        nas-cin:
+        ipa-cin:

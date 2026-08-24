@@ -1,0 +1,28 @@
+---
+# Configure unattended self-patching on the FreeIPA replica VMs.
+#
+# Applies the freeipa_autopatch role to every replica in ipa_replicas:
+#   - dnf-automatic, security-only (daily, applies security updates)
+#   - daily netbird upgrade (restarts the daemon only on change)
+#   - staggered per-site post-patch reboot (reboots only when
+#     `needs-restarting -r` requires it; sdg/sct/cin in distinct windows so
+#     the mesh never loses two replicas at once)
+#
+# New VMs already get the dnf-automatic security baseline from the
+# truenas_freeipa_vm cloud-init template; this playbook converges existing
+# VMs and layers on the netbird upgrade + staggered reboot timers. Re-runnable
+# and idempotent. Run it during replica bring-up, after freeipa-install.yml.
+#
+# Usage:
+#   ansible-playbook -i inventory.yml playbooks/freeipa-autopatch.yml
+#   ansible-playbook -i inventory.yml playbooks/freeipa-autopatch.yml --limit ipa-sct
+#
+# NOTE: a `--limit` that targets a single replica only reconfigures that one;
+# the per-site reboot stagger is computed per host, so partial runs stay
+# correct.
+
+- name: Configure self-patching on the FreeIPA replica VMs
+  hosts: ipa_replicas
+  become: true
+  roles:
+    - freeipa_autopatch

@@ -1,0 +1,16 @@
+---
+# Deploys the freeipa_metrics role to every replica VM: node_exporter on
+# :9100 (overlay-only reachability via firewalld zones) + ipa-healthcheck
+# textfile metrics for the nas-sdg VictoriaMetrics hub (nix-personal#153
+# Phase 3). Idempotent; safe to re-run anytime.
+#
+# Usage:
+#   cd ansible && uv run ansible-playbook -i inventory.yml \
+#     playbooks/freeipa-metrics.yml --private-key ~/.ssh/op-ansible-ssh-key.pub
+
+- name: FreeIPA replica metrics (node_exporter + ipa-healthcheck)
+  hosts: ipa_replicas
+  become: true
+  gather_facts: false
+  roles:
+    - freeipa_metrics

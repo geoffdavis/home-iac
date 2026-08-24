@@ -1,0 +1,19 @@
+---
+# Ansible collection dependencies for home-iac ansible/.
+# Install via: ansible-galaxy collection install -r collections/requirements.yml
+#
+# Scoped to what the seven roles migrated in Task 1 of
+# docs/superpowers/plans/2026-08-21-netbox-udm-sync.md actually use.
+# ugreen-nas-compose's collections/requirements.yml also pinned
+# freeipa.ansible_freeipa (for playbooks/freeipa-install.yml) and
+# ansible.posix (for the firewalld module in that same playbook) — neither
+# is used by any of the seven migrated roles, so both are intentionally
+# left out here. Re-add if/when freeipa-install.yml or freeipa-healthcheck.yml
+# migrate too.
+collections:
+  - name: community.general
+    # `onepassword` lookup plugin — fetches per-host secrets (UDM admin
+    # creds, FreeIPA netbird setup key, SSH pubkey) from 1Password at run
+    # time. Also provides the `timezone` module used by freeipa_rsyslog.
+    # Used by every migrated role that needs credentials.
+    version: ">=10.0.0,<14.0.0"

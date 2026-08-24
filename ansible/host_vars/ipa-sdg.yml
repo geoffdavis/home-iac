@@ -1,0 +1,15 @@
+---
+# IPA bootstrap primary. Runs ipa-server-install --external-ca through the
+# XCA ceremony (see docs/freeipa-runbook.md). All other replicas join from
+# this one. Mesh-closure topologysegment commands run from here too
+# (single source of truth for realm topology).
+#
+# Vars supplied by group membership:
+#   - ipa_replicas:  freeipa_server_fqdn, freeipa_netbird_peer_name,
+#                    ipa_realm, ipa_domain, ansible_become*, SSH options
+#   - ipa_bootstrap: ipa_role=bootstrap, ipaserver_ca_subject
+#
+# This host_vars file is intentionally empty — every var that was here
+# is now group-derived. Keep the file for documentation hooks: if a
+# bootstrap-specific override is ever needed (e.g. forcing a different
+# replica role or CA subject), drop it here and document why.

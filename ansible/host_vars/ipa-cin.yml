@@ -1,0 +1,12 @@
+---
+# IPA replica at CIN. Added in Phase 2 (after issue #109 — nas-cin
+# migration to TrueNAS). Same join mechanics as ipa-sct.
+#
+# Vars supplied by group membership:
+#   - ipa_replicas:  freeipa_server_fqdn, freeipa_netbird_peer_name,
+#                    ipa_realm, ipa_domain, ipa_role=replica,
+#                    ansible_become*, SSH options
+#   - ipa_secondary: (no extra vars at present)
+#
+# This host_vars file is intentionally empty — every var that was here
+# is now group-derived.

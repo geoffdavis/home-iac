@@ -1,0 +1,146 @@
+---
+# nas-sdg (home hub) — UGreen DXP8800 Plus, NixOS. The OS/app config lives in
+# nix-personal; the only host-specific Ansible vars left are the UniFi UDM
+# network settings this repo still reconciles (nas-sdg is the sole PXE- and
+# port-forward-serving host).
+
+# --- unifi_network_dhcp_pxe: UDM Pro PXE-boot DHCP options -------------
+# Options 66 (next-server) + 67 (boot filename) on the LAN networks via the
+# UniFi REST API, so DHCP points PXE-capable clients at the netbootxyz TFTP
+# server on nas-sdg's bond0. Credentials: 1Password "Automation" vault, item
+# "UniFi UDM Pro (ansible)" (username + password) — see the role README.
+# Only nas-sdg serves PXE; the other hosts inherit _enabled=false and no-op.
+unifi_network_dhcp_pxe_enabled: true
+unifi_network_dhcp_pxe_controller_url: "https://172.29.50.1"
+# DHCP Option 66 next-server: nas-sdg's bond0/br0 primary alias.
+unifi_network_dhcp_pxe_next_server: "172.29.50.20"
+unifi_network_dhcp_pxe_target_network_names:
+  - "Private"
+  - "IoT"
+  - "NoT"
+  - "Management"
+
+# --- unifi_network_port_forward: UDM port forwarding -------------------
+# Forward WAN UDP 51820 -> nas-sdg:51820 so remote Netbird peers can establish
+# direct WireGuard connections (nas-sdg is the home hub routing peer; direct
+# paths matter for backup throughput from nas-cin / nas-sct). fwd uses
+# 172.29.50.20 (bond0/br0 primary; the UDM DNATs to this dest IP regardless of
+# egress interface). Keep dst_port in sync with netbird's WG listen port in
+# nix-personal.
+unifi_network_port_forward_enabled: true
+unifi_network_port_forward_rules:
+  - name: netbird-nas-sdg
+    proto: udp
+    src: any
+    dst_port: "51820"
+    fwd: "172.29.50.20"
+    fwd_port: "51820"
+
+# --- unifi_network_dns_record: UDM static DNS records -------------------
+# Stable service aliases in the UDM-authoritative home.geoffdavis.com zone.
+# syslog: the central syslog endpoint (VictoriaLogs on nas-sdg) for LAN
+# senders — CNAME so a future host move is a one-line change here. The
+# overlay-fabric twin (syslog.ipa.geoffdavis.com) lives in the FreeIPA
+# zone via playbooks/freeipa-dns-records.yml. The v2 static-dns schema
+# has no name/comment field, so intent is documented here instead.
+unifi_network_dns_record_enabled: true
+# CAPTURED FROM THE LIVE UDM 2026-08-19. Everything below the syslog CNAME
+# already existed on the router and was NOT in code — added by hand over
+# time, by the cluster, or ad hoc. There is no single source of truth for
+# this network (Talos writes some of it, ansible some, operators the rest),
+# so the first step to having one is writing down what is actually there.
+#
+# Declaring them is SAFE and idempotent: the role reconciles PER RECORD from
+# this list (roles/unifi_network_dns_record/tasks/reconcile_one.yml) and does
+# NOT prune anything it does not mention. state=present on a record that
+# already matches is a no-op; it only starts to matter the day someone
+# changes one here, or the router is rebuilt.
+unifi_network_dns_record_records:
+  # --- service aliases in the UDM-authoritative zone ---------------------
+  - record_type: CNAME
+    key: syslog.home.geoffdavis.com
+    value: nas-sdg.iot.home.geoffdavis.com
+    state: present
+
+  # --- split-horizon: these resolve to the OVERLAY, not the LAN ----------
+  # This is where the split-horizon lives (topology note). Pointing *.nas /
+  # *.admin at nas-sdg's netbird IP is what makes those names work the same
+  # on and off the LAN.
+  - record_type: A
+    key: nas.home.geoffdavis.com
+    value: 100.92.233.103
+    state: present
+  - record_type: A
+    key: "*.nas.home.geoffdavis.com"
+    value: 100.92.233.103
+    state: present
+  - record_type: A
+    key: admin.home.geoffdavis.com
+    value: 100.92.233.103
+    state: present
+  - record_type: A
+    key: "*.admin.home.geoffdavis.com"
+    value: 100.92.233.103
+    state: present
+
+  # --- media tier, on the LAN -------------------------------------------
+  - record_type: A
+    key: media.home.geoffdavis.com
+    value: 172.29.50.20
+    state: present
+  - record_type: A
+    key: "*.media.home.geoffdavis.com"
+    value: 172.29.50.20
+    state: present
+  - record_type: A
+    key: homeassistant.media.home.geoffdavis.com
+    value: 172.29.50.157
+    state: present
+  # Home Assistant's DuckDNS name, pinned to its LAN address so local
+  # clients do not hairpin out to the public record.
+  - record_type: A
+    key: pottedpork-hassio.duckdns.org
+    value: 172.29.50.157
+    state: present
+
+  # --- the VLAN 10 leg: statics do NOT self-register ---------------------
+  # The UDM auto-names DHCP clients into <vlan>.home.geoffdavis.com, so
+  # talos-pi5-02.mgmt... exists for free. A STATIC address gets no lease and
+  # therefore no name, which is why this one had to be written by hand
+  # (topology note, "nas-sdg needed a hand-written mgmt record").
+  - record_type: A
+    key: nas-sdg.mgmt.home.geoffdavis.com
+    value: 172.29.10.20
+    state: present
+  # tourmaline gained a VLAN 10 leg on 2026-08-19 to peer BGP with the UDM
+  # as the backup netbird routing peer, and hit the identical exception:
+  # a static address mints no auto-name, so neither tourmaline.mgmt... nor
+  # tourmaline.iot... resolved. Not load-bearing for the peering itself
+  # (FRR is configured by address), but the leg should be nameable.
+  - record_type: A
+    key: tourmaline.mgmt.home.geoffdavis.com
+    value: 172.29.10.30
+    state: present
+
+  # --- cluster ----------------------------------------------------------
+  - record_type: NS
+    key: ipa.geoffdavis.com
+    value: 172.29.50.21
+    state: present
+  - record_type: A
+    key: k8s.home.geoffdavis.com
+    value: 172.29.51.10
+    state: present
+  # SUSPECT, captured as-found rather than corrected: 172.29.55.0 is the
+  # NETWORK address of the Cilium LoadBalancer pool, not a host. These
+  # probably want the actual LB IPs (or CNAMEs to them). Left alone here
+  # because this commit is a faithful capture; fix in its own change once
+  # someone confirms what they should point at.
+  - record_type: A
+    key: website-dev.k8s.home.geoffdavis.com
+    value: 172.29.55.0
+    state: present
+  - record_type: A
+    key: website-prod.k8s.home.geoffdavis.com
+    value: 172.29.55.0
+    state: present
