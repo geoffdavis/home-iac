@@ -132,6 +132,16 @@
               -d '{"username":"...","password":"..."}' -i
           and adjust this role's header capture if the field name changed.
 
+    # check_mode: false — same rationale as the login task above: `uri`
+    # skips non-GET requests under --check, but ALSO skips a plain GET
+    # unless forced, since it has no way to know the request is
+    # side-effect-free on its own. Without this, --check crashes the next
+    # task (`_udm_networks.json` doesn't exist on the empty skip-stub
+    # result) before it ever gets to compute a diff — found live during
+    # home-iac migration Task 1 Step 6 dry-run verification (see
+    # docs/superpowers/plans/2026-08-21-netbox-udm-sync.md); the read
+    # itself changes nothing on the controller, so forcing it through in
+    # check mode is safe.
     - name: "GET current network configurations"
       ansible.builtin.uri:
         url: "{{ unifi_network_dhcp_pxe_controller_url }}/proxy/network/api/s/{{ unifi_network_dhcp_pxe_site }}/rest/networkconf"
@@ -146,6 +156,7 @@
       delegate_to: localhost
       become: false
       no_log: true
+      check_mode: false
 
     - name: "Find the target networks by display name"
       ansible.builtin.set_fact:
