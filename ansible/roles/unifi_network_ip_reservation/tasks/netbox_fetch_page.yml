@@ -1,0 +1,35 @@
+---
+# netbox_fetch_page.yml — fetch one page of NetBox's `status=dhcp`
+# IP-address list and append it to _udm_res_netbox_results. Called in a
+# loop from main.yml; loop_var is `_page_num` (unused — the loop exists
+# only to bound iteration count; the real stop condition is
+# _udm_res_netbox_next_url going empty).
+#
+# NetBox's list endpoints paginate via a `next` URL in the response body
+# (DRF-style `{count, next, previous, results}`), not a page-number
+# query param, so the loop can't just range() over pages directly — it
+# has to follow `next` until the API says there isn't one.
+
+- name: "Fetch one NetBox IP-address page"
+  ansible.builtin.uri:
+    url: "{{ _udm_res_netbox_next_url }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_netbox_page
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+  when: _udm_res_netbox_next_url | length > 0
+
+- name: "Accumulate results + advance pagination cursor"
+  ansible.builtin.set_fact:
+    _udm_res_netbox_results: "{{ _udm_res_netbox_results + _udm_res_netbox_page.json.results }}"
+    _udm_res_netbox_next_url: "{{ _udm_res_netbox_page.json.next | default('') }}"
+  when: _udm_res_netbox_next_url | length > 0

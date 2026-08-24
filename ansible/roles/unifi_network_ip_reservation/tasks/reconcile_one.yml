@@ -1,0 +1,137 @@
+---
+# reconcile_one.yml — reconcile a single resolved reservation
+# (_udm_res_reservation: {netbox_id, ip, mac, hostname, network_id})
+# against the UDM's known-client list (`/rest/user`). Called in a loop
+# from main.yml.
+#
+# Endpoint + payload shape — CONFIRMED LIVE this session (2026-08-24)
+# against the real UDM at 172.29.50.1, not guessed: GET
+# /proxy/network/api/s/default/rest/user returned 50 existing clients
+# with `use_fixedip: true`, each carrying `mac`, `fixed_ip`,
+# `network_id`, and the object's `_id` — the same legacy v1
+# `{data: [...], meta: {rc: "ok"}}` envelope `unifi_network_port_forward`
+# already uses against `/rest/portforward`. That's what this task
+# implements. See the role README's "UDM endpoint" section for the
+# verification transcript.
+#
+# We only own three fields on the client object: use_fixedip, fixed_ip,
+# network_id — never the device's discovered `name`/other fields, same
+# "project down to owned keys" pattern unifi_network_dns_record and
+# unifi_network_port_forward use.
+#
+# Actions:
+#   found (by mac), drift → PUT (update) — PROVEN: the PUT path updates
+#     the same kind of object this role reads, matching the other
+#     unifi_network_* roles' full-object-PUT convention.
+#   found (by mac), match → no-op
+#   not found        → POST (pre-provision a not-yet-connected client) —
+#     UNVERIFIED: every one of the 50 live use_fixedip clients found
+#     during verification was a previously-seen device (`first_seen` is
+#     always populated); none demonstrate whether POSTing a bare
+#     {mac, use_fixedip, fixed_ip, network_id} for a MAC the controller
+#     has never observed actually pre-provisions a reservation, or is
+#     rejected/ignored. Do not trust this path for a device that has
+#     never connected without confirming it live first — see README.
+#
+# No DELETE / un-reserve path — an address leaving NetBox's status=dhcp
+# set does not un-reserve it here. Deliberate scope cut (spec Non-goals:
+# "never merged... drift to be detected and overwritten, not merged" is
+# about DNS; this role has no marker distinguishing role-owned
+# reservations from hand-set ones, so guessing which `use_fixedip`
+# clients are "ours" to delete is out of scope for this first cut).
+
+- name: "Find existing client by MAC — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_match: >-
+      {{ _udm_res_existing.json.data
+         | selectattr('mac', 'equalto', _udm_res_reservation.mac)
+         | list }}
+
+- name: "Build desired payload — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_desired:
+      mac: "{{ _udm_res_reservation.mac }}"
+      use_fixedip: true
+      fixed_ip: "{{ _udm_res_reservation.ip }}"
+      network_id: "{{ _udm_res_reservation.network_id }}"
+
+- name: "Compute drift — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_needs_update: >-
+      {{
+        _udm_res_match | length > 0 and
+        (_udm_res_match[0] | dict2items
+         | selectattr('key', 'in', _udm_res_desired.keys() | list)
+         | items2dict) != _udm_res_desired
+      }}
+
+- name: "Debug — current vs desired — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.debug:
+    msg:
+      - "reservation: {{ _udm_res_reservation.ip }} ({{ _udm_res_reservation.mac }}, netbox_id={{ _udm_res_reservation.netbox_id }})"
+      - "exists as known client: {{ _udm_res_match | length > 0 }}"
+      - "needs_update: {{ _udm_res_needs_update | default('N/A') }}"
+      - "current: {{ _udm_res_match[0] | default({}) | dict2items | selectattr('key', 'in', _udm_res_desired.keys() | list) | items2dict }}"
+      - "desired: {{ _udm_res_desired }}"
+
+# --- not found → POST (see UNVERIFIED note above) ---
+- name: "POST (create known client + reservation) — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user"
+    method: POST
+    headers:
+      Cookie: "{{ _udm_res_cookie }}"
+      X-CSRF-Token: "{{ _udm_res_csrf }}"
+    body_format: json
+    body: "{{ _udm_res_desired }}"
+    validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _udm_res_match | length == 0
+
+- name: "Assert POST succeeded — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_res_create_result.json.meta.rc == 'ok'
+    fail_msg: "Reservation POST for '{{ _udm_res_reservation.mac }}' returned unexpected rc: {{ _udm_res_create_result.json }}"
+  when:
+    - _udm_res_match | length == 0
+    - not ansible_check_mode
+
+# --- found, drift → PUT (PROVEN path — see header) ---
+- name: "PUT (update reservation) — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user/{{ _udm_res_match[0]['_id'] }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _udm_res_cookie }}"
+      X-CSRF-Token: "{{ _udm_res_csrf }}"
+    body_format: json
+    body: "{{ _udm_res_desired }}"
+    validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _udm_res_match | length > 0
+    - _udm_res_needs_update | bool
+
+- name: "Assert PUT succeeded — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_res_update_result.json.meta.rc == 'ok'
+    fail_msg: "Reservation PUT for '{{ _udm_res_reservation.mac }}' returned unexpected rc: {{ _udm_res_update_result.json }}"
+  when:
+    - _udm_res_match | length > 0
+    - _udm_res_needs_update | bool
+    - not ansible_check_mode

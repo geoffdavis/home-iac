@@ -190,17 +190,48 @@ syncs cleanly too.
 **Files:** Create `ansible/roles/unifi_network_ip_reservation/`; modify
 `ansible/playbooks/unifi-network.yml`
 
-- [ ] **Step 1: Write `defaults/main.yml`.**
-- [ ] **Step 2: Write the NetBox query task** — resolve the MAC/interface
+- [x] **Step 1: Write `defaults/main.yml`.** Done.
+- [x] **Step 2: Write the NetBox query task** — resolve the MAC/interface
   association question from the spec's Design section before the
-  transform.
-- [ ] **Step 3: Write the UDM-side GET → diff → apply task** once the
-  DHCP-reservation endpoint is confirmed live.
-- [ ] **Step 4: `--check` dry run against a known-static address.**
-- [ ] **Step 5: Real run for a genuinely new reservation.**
-- [ ] **Step 6: Add the role to `unifi-network.yml`.**
-- [ ] **Step 7: Write the README.**
-- [ ] **Step 8: Commit.**
+  transform. Resolved: `ipam.IPAddress` carries no MAC of its own — it
+  lives on the interface reached via `assigned_object_type` +
+  `assigned_object_id` (`dcim.Interface` / `virtualization.VMInterface`),
+  fetched with a second per-address GET. This fleet runs NetBox v4.6
+  (`hosts/nas-sdg/apps/netbox.nix`), which moved MACs onto a dedicated
+  `dcim.MACAddress` object in 4.2 — the resolution task reads both the
+  interface's `mac_address` and `primary_mac_address.mac_address` to
+  tolerate either shape. See
+  `ansible/roles/unifi_network_ip_reservation/README.md`'s "MAC/interface
+  design question" section. Unverified against a live NetBox response —
+  the escrowed API token doesn't currently authenticate (see Step 4).
+- [x] **Step 3: Write the UDM-side GET → diff → apply task** once the
+  DHCP-reservation endpoint is confirmed live. Confirmed live
+  2026-08-24: `/proxy/network/api/s/default/rest/user` (legacy v1 REST
+  "known client" objects, `use_fixedip`/`fixed_ip`/`network_id` fields,
+  same `{data, meta}` envelope `unifi_network_port_forward` uses) — 50
+  existing `use_fixedip` clients found on the real controller. See the
+  role README's "UDM endpoint" section for the transcript.
+- [x] **Step 4: `--check` dry run against a known-static address.** Done
+  against the live UDM for both nas-sdg (172.29.10.20) and pacificbeach
+  (172.29.10.31), feeding `reconcile_one.yml` real UDM-observed MACs by
+  hand (NetBox's own token doesn't authenticate — see role README).
+  Both correctly detect drift on the proven PUT/update path; zero writes
+  performed. Full transcript and the NetBox-token caveat are in the role
+  README.
+- [ ] **Step 5: Real run for a genuinely new reservation.** **Not done —
+  deliberately stopped here.** NetBox has no real backfilled data yet
+  (Task 2 in flight in parallel) and its token doesn't authenticate, so
+  there's no genuine NetBox-authored reservation to drive a real run
+  with; the one UDM code path a hand-picked "new" reservation would most
+  plausibly exercise (`POST` for a never-before-seen MAC) is exactly the
+  path Step 3 could not verify live. See the role README's "No real
+  write performed" section for the reasoning and recommended next step.
+- [x] **Step 6: Add the role to `unifi-network.yml`.** Done — added,
+  but left un-enabled in every host's `host_vars` (opt-in default
+  `false` only) pending Task 2's backfill and Step 5.
+- [x] **Step 7: Write the README.** Done —
+  `ansible/roles/unifi_network_ip_reservation/README.md`.
+- [x] **Step 8: Commit.** This PR.
 
 ### Task 6: Remove the escape hatch
 

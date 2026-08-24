@@ -1,0 +1,67 @@
+---
+# unifi_network_ip_reservation: push NetBox `status=dhcp` IP addresses to
+# the UDM Pro / UniFi Network controller's DHCP fixed-reservation list.
+#
+# NEW role — home-iac issue tracking geoffdavis/ugreen-nas-compose#250 /
+# docs/superpowers/specs/2026-08-21-netbox-udm-sync-design.md. Before this
+# role, static IP assignment was 100% manual, UDM-UI-only: neither this
+# repo's other unifi_network_* roles nor the ugreen-nas-compose originals
+# touch per-host DHCP reservations. Closes the pacificbeach-style "what's
+# free on this VLAN" gap the spec's Why section describes.
+#
+# Runs entirely controller-side (delegate_to: localhost), same auth
+# pattern as unifi_network_dns_record / unifi_network_port_forward.
+
+# Opt-in per host. Default false so hosts with no reservation
+# requirements inherit a no-op.
+unifi_network_ip_reservation_enabled: false
+
+# Controller base URL / site. Shares defaults with the other
+# unifi_network_* roles.
+unifi_network_ip_reservation_controller_url: "https://172.29.50.1"
+unifi_network_ip_reservation_validate_certs: false
+unifi_network_ip_reservation_site: "default"
+
+# 1Password lookup for the controller's admin credentials — same item
+# every unifi_network_* role uses (a single "Limited Admin" UniFi
+# account).
+unifi_network_ip_reservation_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_ip_reservation_creds_op_vault: "Automation"
+unifi_network_ip_reservation_creds_username_field: "username"
+unifi_network_ip_reservation_creds_password_field: "password"
+
+# --- NetBox connection -------------------------------------------------
+unifi_network_ip_reservation_netbox_url: "http://netbox.mgmt.home.geoffdavis.com:8080"
+unifi_network_ip_reservation_netbox_validate_certs: true
+
+# Read-only NetBox API token, 1Password-sourced. Deliberately a
+# *separate* 1Password item from netbox_import_udm_state's backfill
+# token (Task 2) — that one is write-scoped; this role only ever reads.
+# See the design doc's Credentials section.
+unifi_network_ip_reservation_netbox_creds_op_item: "nas-sdg netbox"
+unifi_network_ip_reservation_netbox_creds_op_vault: "nas-overlay"
+unifi_network_ip_reservation_netbox_creds_token_field: "api_token"
+
+# Only IP addresses whose containing prefix carries this NetBox tag are
+# considered "tracked" (spec Design: "Reads NetBox status=dhcp IP
+# addresses for tracked prefixes"). Keeps a bare status=dhcp query from
+# reserving addresses on prefixes this role was never meant to manage
+# (WAN allocations, other sites' ranges before review, etc). Empty
+# string disables the tag filter entirely — not the default, since an
+# untagged query against a populated NetBox would try to reserve
+# everything status=dhcp fleet-wide on the first run.
+unifi_network_ip_reservation_netbox_tag: "unifi-managed"
+unifi_network_ip_reservation_netbox_page_limit: 200
+unifi_network_ip_reservation_netbox_max_pages: 20
+
+# NetBox 4.2+ moved MAC addresses off Interface.mac_address (a plain
+# CharField pre-4.2) onto a dedicated dcim.MACAddress object, referenced
+# from Interface.primary_mac_address. NetBox v4.6 (the version this
+# fleet runs, hosts/nas-sdg/apps/netbox.nix) keeps `mac_address` as a
+# read/write convenience field on Interface/VMInterface that mirrors
+# primary_mac_address, but this has not been confirmed against a live
+# instance (NetBox is unreachable with the token available this
+# session — see the role README). The interface-resolution task reads
+# both `mac_address` and `primary_mac_address.mac_address`, preferring
+# whichever is populated, rather than assuming one — confirm live before
+# trusting this fully.

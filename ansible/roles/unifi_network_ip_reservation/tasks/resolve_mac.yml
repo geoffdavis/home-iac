@@ -1,0 +1,110 @@
+---
+# resolve_mac.yml — for one NetBox IP-address result (_udm_res_ip, loop
+# var from main.yml), resolve the MAC address a DHCP reservation needs.
+#
+# THE DESIGN QUESTION THIS ANSWERS (spec Design section, plan Task 5
+# Step 2): NetBox's ipam.IPAddress objects carry no MAC field of their
+# own. A MAC lives on the Interface (dcim.Interface) or VMInterface
+# (virtualization.VMInterface) the address is assigned to, via
+# IPAddress.assigned_object (a generic FK, surfaced as
+# assigned_object_type + assigned_object_id) — NOT embedded in the
+# IP-address list response itself. This role therefore does a second,
+# per-address GET against the resolved interface endpoint rather than
+# trying to read a MAC off the IP-address object directly.
+#
+# A second wrinkle, specific to the NetBox version this fleet runs
+# (v4.6, hosts/nas-sdg/apps/netbox.nix): NetBox 4.2 moved MAC addresses
+# off Interface.mac_address (a plain CharField pre-4.2) onto a dedicated
+# dcim.MACAddress object, referenced via Interface.primary_mac_address.
+# Both dcim.Interface and virtualization.VMInterface still expose a
+# `mac_address` convenience field mirroring primary_mac_address in
+# NetBox's current REST API docs, but this has NOT been confirmed
+# against a live instance (NetBox was unreachable with the token
+# available when this role was written — see the role README). This
+# task reads both `mac_address` and `primary_mac_address.mac_address`,
+# preferring whichever is populated, so it tolerates either shape
+# instead of assuming one.
+#
+# Appends to _udm_res_drafts (ip/mac/hostname/netbox_id) when a MAC was
+# found, or to _udm_res_dropped (with a reason, logged loudly by
+# main.yml) when it wasn't. Never guesses a MAC.
+
+- name: "Reset per-address resolution state"
+  ansible.builtin.set_fact:
+    _udm_res_mac_type: "{{ _udm_res_ip.assigned_object_type | default(None) }}"
+    _udm_res_mac_id: "{{ _udm_res_ip.assigned_object_id | default(None) }}"
+    _udm_res_mac_found: ""
+
+- name: "GET the assigned dcim.Interface — {{ _udm_res_ip.address }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_netbox_url }}/api/dcim/interfaces/{{ _udm_res_mac_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_iface_lookup
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+  when: _udm_res_mac_type == 'dcim.interface' and _udm_res_mac_id is not none
+
+- name: "GET the assigned virtualization.VMInterface — {{ _udm_res_ip.address }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_netbox_url }}/api/virtualization/interfaces/{{ _udm_res_mac_id }}/"
+    method: GET
+    headers:
+      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_vminterface_lookup
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+  when: _udm_res_mac_type == 'virtualization.vminterface' and _udm_res_mac_id is not none
+
+- name: "Extract MAC — prefer mac_address, fall back to primary_mac_address.mac_address — {{ _udm_res_ip.address }}"
+  ansible.builtin.set_fact:
+    _udm_res_mac_found: >-
+      {{
+        (_udm_res_iface_lookup.json.mac_address
+         | default(_udm_res_iface_lookup.json.primary_mac_address.mac_address | default(''), true))
+        if (_udm_res_mac_type == 'dcim.interface')
+        else (
+          (_udm_res_vminterface_lookup.json.mac_address
+           | default(_udm_res_vminterface_lookup.json.primary_mac_address.mac_address | default(''), true))
+          if (_udm_res_mac_type == 'virtualization.vminterface')
+          else ''
+        )
+      }}
+
+- name: "Append draft with resolved MAC — {{ _udm_res_ip.address }}"
+  ansible.builtin.set_fact:
+    _udm_res_drafts: >-
+      {{ _udm_res_drafts + [{
+        'netbox_id': _udm_res_ip.id,
+        'ip': _udm_res_ip.address.split('/')[0],
+        'mac': _udm_res_mac_found | lower,
+        'hostname': (_udm_res_ip.dns_name | default('')) | trim('.'),
+      }] }}
+  when: _udm_res_mac_found | length > 0
+
+- name: "Append dropped address — no assigned interface or no MAC — {{ _udm_res_ip.address }}"
+  ansible.builtin.set_fact:
+    _udm_res_dropped: >-
+      {{ _udm_res_dropped + [{
+        'netbox_id': _udm_res_ip.id,
+        'ip': _udm_res_ip.address.split('/')[0],
+        'reason': ('no assigned interface (assigned_object_type=' ~ (_udm_res_mac_type | default('none')) ~ ')'
+                   if (_udm_res_mac_type not in ['dcim.interface', 'virtualization.vminterface'] or _udm_res_mac_id is none)
+                   else 'assigned interface has no mac_address / primary_mac_address'),
+      }] }}
+  when: _udm_res_mac_found | length == 0
