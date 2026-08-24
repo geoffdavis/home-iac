@@ -1,0 +1,58 @@
+---
+# resolve_network.yml — for one draft reservation (_udm_res_draft, loop
+# var from main.yml: {netbox_id, ip, mac, hostname}), look up the VLAN
+# name of its containing NetBox prefix and resolve that name to a UDM
+# `networkconf` `_id`. Appends a fully resolved reservation
+# (network_id populated) to _udm_res_resolved, or a logged, never-guessed
+# entry to _udm_res_unresolved when either lookup comes up empty.
+#
+# One NetBox + zero UDM lookups per reservation (the UDM networkconf
+# list is fetched once in main.yml, not per-draft) — fine at the scale
+# this role targets (tens of static reservations, not thousands).
+
+- name: "GET NetBox prefix containing {{ _udm_res_draft.ip }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_netbox_url }}/api/ipam/prefixes/?contains={{ _udm_res_draft.ip }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_prefix_lookup
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+# `contains` can return multiple ancestor prefixes (e.g. a /16 supernet
+# and its /24) — the most specific (longest mask) is the one whose VLAN
+# actually applies to this address.
+- name: "Pick the most specific containing prefix — {{ _udm_res_draft.ip }}"
+  ansible.builtin.set_fact:
+    _udm_res_prefix: >-
+      {{ (_udm_res_prefix_lookup.json.results
+          | sort(attribute='prefix_length', reverse=true)
+          | first)
+         if (_udm_res_prefix_lookup.json.results | length > 0) else {} }}
+
+- name: "Resolve UDM network_id by VLAN name — {{ _udm_res_draft.ip }}"
+  ansible.builtin.set_fact:
+    _udm_res_network_id: >-
+      {{ _udm_res_networkconf_by_name.get(_udm_res_prefix.vlan.name, None)
+         if (_udm_res_prefix.vlan is defined and _udm_res_prefix.vlan) else None }}
+
+- name: "Append resolved reservation — {{ _udm_res_draft.ip }}"
+  ansible.builtin.set_fact:
+    _udm_res_resolved: "{{ _udm_res_resolved + [_udm_res_draft | combine({'network_id': _udm_res_network_id})] }}"
+  when: _udm_res_network_id is not none
+
+- name: "Append unresolved reservation (logged, never pushed) — {{ _udm_res_draft.ip }}"
+  ansible.builtin.set_fact:
+    _udm_res_unresolved: >-
+      {{ _udm_res_unresolved + [_udm_res_draft | combine({
+        'reason': ('no VLAN on the containing NetBox prefix, or no UDM network named ' ~ (_udm_res_prefix.vlan.name | default('(none)')))
+      })] }}
+  when: _udm_res_network_id is none

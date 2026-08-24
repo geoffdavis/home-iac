@@ -1,26 +1,39 @@
 ---
 # playbooks/unifi-network.yml — reconcile UDM Pro network config for the
 # fleet: DHCP reservations + PXE next-server (unifi_network_dhcp_pxe),
-# port-forwards (unifi_network_port_forward), and static DNS records
-# (unifi_network_dns_record). Extracted from the retired
-# truenas-bootstrap.yml when the TrueNAS/Komodo tooling was removed.
+# port-forwards (unifi_network_port_forward), static DNS records
+# (unifi_network_dns_record), and NetBox-sourced DHCP fixed-IP
+# reservations (unifi_network_ip_reservation — added by plan Task 5,
+# docs/superpowers/plans/2026-08-21-netbox-udm-sync.md; see that role's
+# README for the endpoint/payload verification and its "Known gaps").
+# Extracted from the retired truenas-bootstrap.yml when the
+# TrueNAS/Komodo tooling was removed.
 #
-# All UDM API calls run `delegate_to: localhost` (controller-side); the
-# in-between set_fact/assert/debug tasks execute per inventory host but
-# never connect to it — the host loop only supplies per-host vars
-# (lan_ip + the opt-in flags). Opt-in per host via `unifi_network_dhcp_pxe_enabled` /
-# `unifi_network_port_forward_enabled` / `unifi_network_dns_record_enabled`
-# (all default false), set in host_vars. Credentials: 1Password vault
-# "Automation" > "UniFi UDM Pro (ansible)" — see each role's README.
+# All UDM (and, for unifi_network_ip_reservation, NetBox) API calls run
+# `delegate_to: localhost` (both live controller-side); the in-between
+# set_fact/assert/debug tasks execute per inventory host but never
+# connect to it — the host loop only supplies per-host vars (lan_ip +
+# the opt-in flags). Opt-in per host via `unifi_network_dhcp_pxe_enabled` /
+# `unifi_network_port_forward_enabled` / `unifi_network_dns_record_enabled` /
+# `unifi_network_ip_reservation_enabled` (all default false), set in
+# host_vars. unifi_network_ip_reservation is NOT yet enabled anywhere —
+# deliberately left opt-in-only until plan Task 2's NetBox backfill has
+# landed and the role's live verification (README "UDM endpoint") covers
+# the POST/pre-provision path, not just PUT/update. Credentials:
+# 1Password vault "Automation" > "UniFi UDM Pro (ansible)" for the UDM,
+# vault "nas-overlay" > "nas-sdg netbox" for NetBox (read-only) — see
+# each role's README.
 #
 #   uv run ansible-playbook playbooks/unifi-network.yml
 #   uv run ansible-playbook playbooks/unifi-network.yml --limit nas-sdg
-- name: Reconcile UniFi UDM network config (DHCP/PXE + port-forwards + DNS)
+- name: Reconcile UniFi UDM network config (DHCP/PXE + port-forwards + DNS + IP reservations)
   hosts: nas_nixos
-  # API calls delegate to localhost (the UDM API lives controller-side);
-  # we never connect to the NAS host itself, so skip fact gathering.
+  # API calls delegate to localhost (the UDM/NetBox APIs live
+  # controller-side); we never connect to the NAS host itself, so skip
+  # fact gathering.
   gather_facts: false
   roles:
     - unifi_network_dhcp_pxe
     - unifi_network_port_forward
     - unifi_network_dns_record
+    - unifi_network_ip_reservation

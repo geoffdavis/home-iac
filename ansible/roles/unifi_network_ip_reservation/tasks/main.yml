@@ -1,0 +1,219 @@
+---
+# unifi_network_ip_reservation: push NetBox status=dhcp addresses to the
+# UDM's DHCP fixed-reservation list (legacy v1 REST `/rest/user`
+# "known client" objects — see reconcile_one.yml header for the live
+# verification transcript).
+#
+# Flow:
+#   1. Query NetBox for status=dhcp addresses on tagged ("tracked")
+#      prefixes (paginated — netbox_fetch_page.yml).
+#   2. Resolve each address's MAC via its assigned interface
+#      (resolve_mac.yml) — an IPAddress carries no MAC of its own; see
+#      that file's header for why. Anything unresolved is logged loudly
+#      and dropped, never guessed.
+#   3. Resolve each draft's VLAN (via its containing NetBox prefix) to a
+#      UDM network_id (resolve_network.yml).
+#   4. Authenticate to the UDM; GET the known-client list.
+#   5. Reconcile each resolved reservation by MAC (reconcile_one.yml):
+#      PUT on drift (proven), POST if the MAC has no client record yet
+#      (unverified — see reconcile_one.yml).
+#
+# No delete/orphan path (see reconcile_one.yml's header) — an address
+# leaving NetBox's status=dhcp set is not currently un-reserved on the
+# UDM. Deliberate scope cut for this first cut, given the
+# destructive-mistake risk of guessing which `use_fixedip` clients this
+# role "owns" without an explicit marker.
+
+- name: "Block — UniFi DHCP fixed-reservation reconciliation (NetBox-sourced)"
+  when: unifi_network_ip_reservation_enabled | bool
+  block:
+    - name: "Fetch NetBox read-only API token from 1Password"
+      ansible.builtin.set_fact:
+        _udm_res_netbox_token: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_ip_reservation_netbox_creds_op_item,
+                    vault=unifi_network_ip_reservation_netbox_creds_op_vault,
+                    field=unifi_network_ip_reservation_netbox_creds_token_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+
+    - name: "Reset NetBox pagination + draft-resolution state"
+      ansible.builtin.set_fact:
+        _udm_res_netbox_results: []
+        _udm_res_netbox_next_url: >-
+          {{ unifi_network_ip_reservation_netbox_url
+             ~ '/api/ipam/ip-addresses/?status=dhcp'
+             ~ (('&tag=' ~ (unifi_network_ip_reservation_netbox_tag | urlencode))
+                if (unifi_network_ip_reservation_netbox_tag | length > 0) else '')
+             ~ '&limit=' ~ unifi_network_ip_reservation_netbox_page_limit }}
+        _udm_res_drafts: []
+        _udm_res_dropped: []
+        _udm_res_resolved: []
+        _udm_res_unresolved: []
+
+    - name: "Fetch all NetBox status=dhcp IP-address pages"
+      ansible.builtin.include_tasks: netbox_fetch_page.yml
+      loop: "{{ range(0, unifi_network_ip_reservation_netbox_max_pages) }}"
+      loop_control:
+        loop_var: _page_num
+
+    - name: "Resolve MAC for each NetBox address"
+      ansible.builtin.include_tasks: resolve_mac.yml
+      loop: "{{ _udm_res_netbox_results }}"
+      loop_control:
+        loop_var: _udm_res_ip
+        label: "{{ _udm_res_ip.address }}"
+
+    - name: "Log addresses dropped for lack of a usable MAC (never guessed)"
+      ansible.builtin.debug:
+        msg: >-
+          NetBox IP address {{ item.netbox_id }} ({{ item.ip }}): {{ item.reason }}.
+          A DHCP reservation needs a MAC; fix the NetBox interface
+          assignment, or drop status=dhcp on this address if it was
+          tagged by mistake.
+      loop: "{{ _udm_res_dropped }}"
+      loop_control:
+        label: "{{ item.ip }}"
+
+    - name: "Fetch UniFi admin credentials from 1Password"
+      ansible.builtin.set_fact:
+        _udm_res_username: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_ip_reservation_creds_op_item,
+                    vault=unifi_network_ip_reservation_creds_op_vault,
+                    field=unifi_network_ip_reservation_creds_username_field) }}
+        _udm_res_password: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_ip_reservation_creds_op_item,
+                    vault=unifi_network_ip_reservation_creds_op_vault,
+                    field=unifi_network_ip_reservation_creds_password_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+      when: _udm_res_drafts | length > 0
+
+    - name: "Authenticate against the UDM controller"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_ip_reservation_controller_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ _udm_res_username }}"
+          password: "{{ _udm_res_password }}"
+        validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+        status_code: 200
+        return_content: false
+      register: _udm_res_login
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+      when: _udm_res_drafts | length > 0
+
+    - name: "Capture session cookie + CSRF token"
+      ansible.builtin.set_fact:
+        _udm_res_cookie: "{{ _udm_res_login.cookies_string }}"
+        _udm_res_csrf: "{{ _udm_res_login.x_csrf_token | default('') }}"
+      no_log: true
+      when: _udm_res_drafts | length > 0
+
+    - name: "Assert CSRF token was returned"
+      ansible.builtin.assert:
+        that:
+          - _udm_res_csrf | length > 0
+        fail_msg: |
+          UDM login succeeded but no X-CSRF-Token header came back.
+          Check the auth flow manually:
+            curl -ks {{ unifi_network_ip_reservation_controller_url }}/api/auth/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"...","password":"..."}' -i
+      when: _udm_res_drafts | length > 0
+
+    # check_mode: false — same rationale unifi_network_dns_record's GET
+    # carries (see that role's tasks/main.yml comment): `uri` skips a
+    # plain GET under --check unless forced, which crashes
+    # resolve_network.yml / reconcile_one.yml before they get a diff to
+    # compute. The read itself changes nothing on the controller.
+    - name: "GET UDM network configurations (VLAN name -> network_id)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/networkconf"
+        method: GET
+        headers:
+          Cookie: "{{ _udm_res_cookie }}"
+          X-CSRF-Token: "{{ _udm_res_csrf }}"
+        validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_res_networkconf
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+      when: _udm_res_drafts | length > 0
+
+    - name: "Build VLAN-name -> network_id map"
+      ansible.builtin.set_fact:
+        _udm_res_networkconf_by_name: >-
+          {{ dict(_udm_res_networkconf.json.data
+             | map(attribute='name')
+             | zip(_udm_res_networkconf.json.data | map(attribute='_id'))) }}
+      when: _udm_res_drafts | length > 0
+
+    - name: "Resolve network for each draft"
+      ansible.builtin.include_tasks: resolve_network.yml
+      loop: "{{ _udm_res_drafts }}"
+      loop_control:
+        loop_var: _udm_res_draft
+        label: "{{ _udm_res_draft.ip }}"
+
+    - name: "Log unresolved reservations loudly (never pushed with a guessed network)"
+      ansible.builtin.debug:
+        msg: "{{ item.ip }} (mac {{ item.mac }}): {{ item.reason }}"
+      loop: "{{ _udm_res_unresolved }}"
+      loop_control:
+        label: "{{ item.ip }}"
+
+    - name: "GET current UDM known clients"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user"
+        method: GET
+        headers:
+          Cookie: "{{ _udm_res_cookie }}"
+          X-CSRF-Token: "{{ _udm_res_csrf }}"
+        validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_res_existing
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+      when: _udm_res_resolved | length > 0
+
+    - name: "Reconcile each resolved reservation"
+      ansible.builtin.include_tasks: reconcile_one.yml
+      loop: "{{ _udm_res_resolved }}"
+      loop_control:
+        loop_var: _udm_res_reservation
+        label: "{{ _udm_res_reservation.ip }} ({{ _udm_res_reservation.mac }})"
+
+    - name: "Logout (best-effort session cleanup)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_ip_reservation_controller_url }}/api/auth/logout"
+        method: POST
+        headers:
+          Cookie: "{{ _udm_res_cookie }}"
+          X-CSRF-Token: "{{ _udm_res_csrf }}"
+        validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+      when: _udm_res_drafts | length > 0
