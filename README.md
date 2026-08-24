@@ -1,27 +1,58 @@
 # home-iac
 
-OpenTofu (Terraform) configuration for home lab AWS infrastructure.
+Infrastructure-as-code for the home lab: OpenTofu (Terraform) for AWS, and
+(since the migration in
+[docs/superpowers/plans/2026-08-21-netbox-udm-sync.md](docs/superpowers/plans/2026-08-21-netbox-udm-sync.md))
+Ansible for FreeIPA replica management and UniFi UDM network integration.
+The Ansible half moved here from `ugreen-nas-compose`, which is being
+retired — see that plan's Task 1 for the migration details.
 
 ## What it manages
+
+**OpenTofu (AWS):**
 
 - **S3 buckets** for backups (Longhorn, Home Assistant, PostgreSQL)
 - **IAM users and policies** for backup service accounts
 - **State backend** (S3 bucket + DynamoDB lock table)
 
+**Ansible (FreeIPA + UniFi UDM):**
+
+- **FreeIPA replica VM provisioning** (`nixos_freeipa_vm`) — builds the
+  per-site `ipa-<site>` libvirt/KVM guest on its NixOS NAS host.
+- **FreeIPA replica day-2 ops** — unattended security patching + staggered
+  reboot (`freeipa_autopatch`), node_exporter + ipa-healthcheck metrics
+  (`freeipa_metrics`), journald→fleet-syslog forwarding (`freeipa_rsyslog`).
+- **UniFi UDM Pro network integration** — static DNS records
+  (`unifi_network_dns_record`), DHCP PXE-boot options
+  (`unifi_network_dhcp_pxe`), port forwarding
+  (`unifi_network_port_forward`), all reconciled idempotently via the
+  UDM's REST API.
+
 ## Prerequisites
 
 - [OpenTofu](https://opentofu.org/) >= 1.5.0
+- [Ansible](https://docs.ansible.com/) (`ansible-core` + the collections in
+  `ansible/collections/requirements.yml`) for the FreeIPA/UDM half
 - [1Password CLI](https://developer.1password.com/docs/cli/) (`op`)
 - [Task](https://taskfile.dev/) runner
-- AWS credentials stored in 1Password
+- AWS credentials stored in 1Password (OpenTofu); UDM + FreeIPA credentials
+  in the `Automation` / `nas-overlay` 1Password vaults (Ansible)
 
 ## Usage
 
 ```bash
 cp .env.example .env   # edit with your 1Password item references
+
+# OpenTofu (AWS)
 task init              # initialize OpenTofu
 task plan              # preview changes
 task apply             # apply changes
+
+# Ansible (FreeIPA + UniFi UDM)
+task ansible:install   # install the pinned collection dependencies
+task ansible:check     # lint + syntax-check (static, no live connections)
+task ansible:run -- playbooks/unifi-network.yml --check --diff  # dry run
+task ansible:run -- playbooks/unifi-network.yml                 # real run
 ```
 
 ## Structure
@@ -38,6 +69,13 @@ environments/
     variables.tf       # input variables
 modules/
   s3-buckets/          # reusable S3 bucket module
+ansible/
+  roles/               # nixos_freeipa_vm, freeipa_autopatch, freeipa_metrics,
+                        # freeipa_rsyslog, unifi_network_dns_record,
+                        # unifi_network_dhcp_pxe, unifi_network_port_forward
+  playbooks/           # entry points, one per role/role-group
+  inventory.yml        # nas_nixos + ipa_replicas (+ site_* groups)
+  host_vars/, group_vars/
 ```
 
 ## State backend
