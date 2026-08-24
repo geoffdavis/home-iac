@@ -1,0 +1,9 @@
+---
+# Ansible collection dependencies for home-iac ansible/.
+# Install via: ansible-galaxy collection install -r collections/requirements.yml
+collections:
+  - name: community.general
+    # `onepassword` lookup plugin — fetches UDM admin creds + NetBox API
+    # tokens from 1Password at run time. Used by every unifi_network_*
+    # role.
+    version: ">=10.0.0,<14.0.0"

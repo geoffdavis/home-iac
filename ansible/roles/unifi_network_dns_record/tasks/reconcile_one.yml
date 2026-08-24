@@ -1,0 +1,167 @@
+---
+# reconcile_one.yml — reconcile a single static DNS record against the
+# UDM controller. Called in a loop from main.yml; loop_var is
+# `_udm_dns_record` (the desired record dict, drawn from set A —
+# NetBox's desired state by default, or the static escape hatch).
+#
+# UNCHANGED from the ugreen-nas-compose original (per design doc:
+# "UDM-side diff/PUT logic unchanged") — only main.yml's construction of
+# the desired-record list changed. Reads `_udm_dns_existing.json` (the
+# full list fetched in main.yml — v2 API, so a BARE array rather than
+# the v1 `.json.data` envelope) and `_udm_dns_cookie` / `_udm_dns_csrf`
+# (session state).
+#
+# Actions:
+#   state=present, not found  → POST (create)
+#   state=present, found + drift → PUT (update)
+#   state=present, found + match → no-op
+#   state=absent,  found       → DELETE
+#   state=absent,  not found   → no-op
+
+# Identity is key + record_type: the same FQDN may legitimately carry
+# records of several types (e.g. A + TXT), so matching on key alone
+# would clobber siblings.
+- name: "Find existing record by key + type — {{ _udm_dns_record.key }}"
+  ansible.builtin.set_fact:
+    _udm_dns_match: >-
+      {{ _udm_dns_existing.json
+         | selectattr('key', 'equalto', _udm_dns_record.key)
+         | selectattr('record_type', 'equalto', _udm_dns_record.record_type)
+         | list }}
+
+# Build the desired payload from the record dict, applying defaults for
+# optional fields.
+- name: "Build desired payload — {{ _udm_dns_record.key }}"
+  ansible.builtin.set_fact:
+    _udm_dns_desired:
+      record_type: "{{ _udm_dns_record.record_type }}"
+      key: "{{ _udm_dns_record.key }}"
+      value: "{{ _udm_dns_record.value }}"
+      enabled: "{{ _udm_dns_record.enabled | default(true) | bool }}"
+
+# Compare the fields we own against the live record. We only diff the
+# fields in _udm_dns_desired — the controller may store additional
+# server-side fields (_id, site_id, ttl) that we neither set nor care
+# about: project the live record down to our keys and compare dicts.
+# (Not `.items() | difference(dict2items)` — tuples never equal
+# {key,value} dicts, which reads as permanent drift and a PUT every
+# run; live finding 2026-07-08.)
+# Always set (no `when:`): set_fact persists across loop iterations, so
+# skipping this on state=absent would leak the PREVIOUS item's verdict
+# into this item's debug output.
+- name: "Compute drift — {{ _udm_dns_record.key }}"
+  ansible.builtin.set_fact:
+    _udm_dns_needs_update: >-
+      {{
+        (_udm_dns_record.state | default('present')) == 'present' and
+        _udm_dns_match | length > 0 and
+        (_udm_dns_match[0] | dict2items
+         | selectattr('key', 'in', _udm_dns_desired.keys() | list)
+         | items2dict) != _udm_dns_desired
+      }}
+
+- name: "Debug — current vs desired — {{ _udm_dns_record.key }}"
+  ansible.builtin.debug:
+    msg:
+      - "record: {{ _udm_dns_record.record_type }} {{ _udm_dns_record.key }}"
+      - "state: {{ _udm_dns_record.state | default('present') }}"
+      - "exists: {{ _udm_dns_match | length > 0 }}"
+      - "needs_update: {{ _udm_dns_needs_update | default('N/A') }}"
+      - "current: {{ _udm_dns_match[0] | default({}) | dict2items | selectattr('key', 'in', _udm_dns_desired.keys() | list) | items2dict }}"
+      - "desired: {{ _udm_dns_desired }}"
+
+# --- state=present, not found → POST ---
+# v2 API: success is HTTP 200 with the created record (incl. _id)
+# echoed back — there is no v1-style {meta: {rc: ok}} envelope.
+- name: "POST (create) — {{ _udm_dns_record.key }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_dns_record_controller_url }}/proxy/network/v2/api/site/{{ unifi_network_dns_record_site }}/static-dns"
+    method: POST
+    headers:
+      Cookie: "{{ _udm_dns_cookie }}"
+      X-CSRF-Token: "{{ _udm_dns_csrf }}"
+    body_format: json
+    body: "{{ _udm_dns_desired }}"
+    validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_dns_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  # uri never flags changed on its own; this task only runs when the
+  # record is missing, so reaching it IS the change.
+  changed_when: true
+  when:
+    - (_udm_dns_record.state | default('present')) == 'present'
+    - _udm_dns_match | length == 0
+
+- name: "Assert POST succeeded — {{ _udm_dns_record.key }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_dns_create_result.json._id is defined
+    fail_msg: "Static-DNS POST for '{{ _udm_dns_record.key }}' returned no _id: {{ _udm_dns_create_result.json | default(_udm_dns_create_result.content | default('(no body)')) }}"
+  when:
+    - (_udm_dns_record.state | default('present')) == 'present'
+    - _udm_dns_match | length == 0
+    - not ansible_check_mode
+
+# --- state=present, found + drift → PUT ---
+# The v2 PUT expects the full object; include the record's _id in the
+# body alongside the desired fields.
+- name: "PUT (update) — {{ _udm_dns_record.key }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_dns_record_controller_url }}/proxy/network/v2/api/site/{{ unifi_network_dns_record_site }}/static-dns/{{ _udm_dns_match[0]['_id'] }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _udm_dns_cookie }}"
+      X-CSRF-Token: "{{ _udm_dns_csrf }}"
+    body_format: json
+    body: "{{ _udm_dns_desired | combine({'_id': _udm_dns_match[0]['_id']}) }}"
+    validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_dns_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  # Gated on computed drift, so reaching this task IS the change.
+  changed_when: true
+  when:
+    - (_udm_dns_record.state | default('present')) == 'present'
+    - _udm_dns_match | length > 0
+    - _udm_dns_needs_update | bool
+
+- name: "Assert PUT succeeded — {{ _udm_dns_record.key }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_dns_update_result.json._id is defined
+    fail_msg: "Static-DNS PUT for '{{ _udm_dns_record.key }}' returned no _id: {{ _udm_dns_update_result.json | default(_udm_dns_update_result.content | default('(no body)')) }}"
+  when:
+    - (_udm_dns_record.state | default('present')) == 'present'
+    - _udm_dns_match | length > 0
+    - _udm_dns_needs_update | bool
+    - not ansible_check_mode
+
+# --- state=absent, found → DELETE ---
+# v2 DELETE returns HTTP 200 with an empty (or minimal) body — no rc
+# envelope to assert on; the status_code check is the success gate.
+- name: "DELETE — {{ _udm_dns_record.key }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_dns_record_controller_url }}/proxy/network/v2/api/site/{{ unifi_network_dns_record_site }}/static-dns/{{ _udm_dns_match[0]['_id'] }}"
+    method: DELETE
+    headers:
+      Cookie: "{{ _udm_dns_cookie }}"
+      X-CSRF-Token: "{{ _udm_dns_csrf }}"
+    validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_dns_delete_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  # Only runs when a record exists to remove; reaching it IS the change.
+  changed_when: true
+  when:
+    - (_udm_dns_record.state | default('present')) == 'absent'
+    - _udm_dns_match | length > 0

@@ -1,0 +1,17 @@
+---
+# ansible-lint config for the ansible/ tree.
+#
+# var-naming[no-role-prefix]: skipped for the underscore-prefixed
+# "private" facts the unifi_network_* roles use internally (_udm_dns_*,
+# _udm_res_*). This is a deliberate, pre-existing convention carried
+# over unchanged from the ugreen-nas-compose original
+# unifi_network_dns_record was rewritten from (see e.g. its
+# reconcile_one.yml, kept byte-for-byte per the design doc's "UDM-side
+# diff/PUT logic unchanged"). The roles' actual public API — every var
+# in defaults/main.yml — already carries the full
+# unifi_network_<role>_ prefix throughout; only transient
+# set_fact/register values scoped to a single task file use the short
+# internal prefix, by design, to keep the (frequently repeated) task
+# names and Jinja expressions readable.
+skip_list:
+  - var-naming[no-role-prefix]

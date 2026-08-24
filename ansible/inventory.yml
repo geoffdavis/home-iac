@@ -1,0 +1,13 @@
+---
+# inventory.yml — the unifi_network_dns_record / unifi_network_ip_reservation
+# roles are global, NetBox-sourced syncs, not per-NAS-host config
+# (unlike unifi_network_dhcp_pxe / unifi_network_port_forward in the
+# ugreen-nas-compose original, which were opt-in per NAS host because
+# only nas-sdg served PXE / needed the netbird port-forward). Every UDM
+# API call in these two roles delegates to localhost, so the playbook
+# runs against a single local control-node "host" rather than the NAS
+# fleet's SSH inventory.
+all:
+  hosts:
+    localhost:
+      ansible_connection: local

@@ -1,0 +1,16 @@
+---
+# host_vars/localhost.yml — enable the NetBox-sourced UDM syncs and
+# point them at the real controller/NetBox instances. Both roles
+# default unifi_network_*_enabled: false, so nothing runs until this
+# (or an equivalent group_vars override) turns them on.
+#
+# NetBox itself doesn't exist yet (geoffdavis/nix-personal#542, Phase 1,
+# still in flight) — until it lands, leave these disabled, or flip
+# unifi_network_dns_record_source to "static" and supply
+# unifi_network_dns_record_records by hand (the same escape hatch the
+# original ugreen-nas-compose role used via host_vars).
+
+unifi_network_dns_record_enabled: false
+# unifi_network_dns_record_source: netbox   # default; "static" is the escape hatch
+
+unifi_network_ip_reservation_enabled: false

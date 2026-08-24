@@ -18,3 +18,30 @@ repos:
           - --hook-config=--retry-once-with-cleanup=true
           - --hook-config=--tf-path=tofu
           - --tf-init-args=-backend=false
+
+  # YAML linting for the Ansible tree (matches ugreen-nas-compose's
+  # config, the repo this Ansible half migrated in from).
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        files: ^ansible/
+        args: [-c, .yamllint.yaml]
+
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v26.8.0
+    hooks:
+      - id: ansible-lint
+        files: ^ansible/
+        # Pin to whatever python3 pre-commit can actually find — the
+        # hook's own default (python3.14, as of this pin) isn't
+        # installed on every contributor machine yet.
+        language_version: python3
+        # pre-commit always invokes from the repo root, but
+        # ansible/ansible.cfg (roles_path etc.) lives one level down —
+        # --project-dir tells ansible-lint where to find it so role
+        # resolution works the same as `task ansible:check`.
+        args: [--project-dir=ansible]
+        additional_dependencies:
+          - jinja2
+          - pyyaml

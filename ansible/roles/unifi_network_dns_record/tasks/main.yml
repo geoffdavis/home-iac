@@ -1,0 +1,213 @@
+---
+# unifi_network_dns_record: idempotent static-DNS reconciliation
+# against the UDM Pro / UniFi Network controller's v2 REST API,
+# sourced from NetBox.
+#
+# Flow:
+#   1. Resolve desired records (set A): query NetBox (default) or use
+#      the static escape hatch (unifi_network_dns_record_source).
+#   2. Resolve admin creds from 1Password, authenticate against the UDM
+#      (POST /api/auth/login -> cookie + X-CSRF-Token).
+#   3. GET /v2/api/site/<site>/static-dns -- the UDM's full current
+#      static-DNS list (bare JSON array, no v1 {data: [...]} envelope).
+#   4. Build the external-dns ownership exclusion set from that list's
+#      TXT records (design doc: "Ownership filter").
+#   5. Filter both the desired list (set A) and the current list
+#      (set B) to the managed zone, minus the exclusion set.
+#   6. Reconcile each record in set A via reconcile_one.yml (create on
+#      POST/PUT, unchanged from the ugreen-nas-compose original).
+#   7. Compute set B's orphans (in the UDM, not in NetBox) and log them
+#      loudly. Never auto-deleted -- see spec Non-goals.
+#   8. Best-effort logout.
+
+- name: "Block — UniFi static-DNS reconciliation (NetBox-sourced)"
+  when: unifi_network_dns_record_enabled | bool
+  block:
+    - name: "Pre-flight — assert a valid desired-state source is configured"
+      ansible.builtin.assert:
+        that:
+          - unifi_network_dns_record_source in ['netbox', 'static']
+        fail_msg: "unifi_network_dns_record_source must be 'netbox' or 'static'."
+
+    - name: "Pre-flight (static source) — assert records list is a non-empty list of mappings"
+      ansible.builtin.assert:
+        that:
+          - unifi_network_dns_record_records is sequence
+          - unifi_network_dns_record_records is not string
+          - unifi_network_dns_record_records is not mapping
+          - unifi_network_dns_record_records | length > 0
+          - (unifi_network_dns_record_records | selectattr('record_type', 'undefined') | list | length) == 0
+          - (unifi_network_dns_record_records | selectattr('key', 'undefined') | list | length) == 0
+          - (unifi_network_dns_record_records | selectattr('value', 'undefined') | list | length) == 0
+        fail_msg: |
+          unifi_network_dns_record_records must be a non-empty list of mappings,
+          each with at least: record_type, key, value, when source == 'static'.
+      when: unifi_network_dns_record_source == 'static'
+
+    # --- NetBox query (set A source) ---------------------------------
+    - name: "Fetch NetBox read-only API token from 1Password"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_token: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dns_record_netbox_creds_op_item,
+                    vault=unifi_network_dns_record_netbox_creds_op_vault,
+                    field=unifi_network_dns_record_netbox_creds_token_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Reset NetBox pagination state"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_results: []
+        _udm_dns_netbox_next_url: >-
+          {{ unifi_network_dns_record_netbox_url
+             ~ unifi_network_dns_record_netbox_records_endpoint
+             ~ '?zone=' ~ (unifi_network_dns_record_netbox_zone | urlencode)
+             ~ '&limit=' ~ unifi_network_dns_record_netbox_page_limit }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Fetch all NetBox DNS record pages"
+      ansible.builtin.include_tasks: netbox_fetch_page.yml
+      loop: "{{ range(0, unifi_network_dns_record_netbox_max_pages) }}"
+      loop_control:
+        loop_var: _page_num
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Transform NetBox records into the UDM record-dict shape (set A, pre-filter)"
+      ansible.builtin.set_fact:
+        _udm_dns_source_records: >-
+          {{ _udm_dns_netbox_results
+             | netbox_dns_records_to_udm(unifi_network_dns_record_netbox_zone) }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Use the static escape hatch as set A (pre-filter)"
+      ansible.builtin.set_fact:
+        _udm_dns_source_records: "{{ unifi_network_dns_record_records }}"
+      when: unifi_network_dns_record_source == 'static'
+
+    # --- UDM auth ------------------------------------------------------
+    - name: "Fetch UniFi admin credentials from 1Password"
+      ansible.builtin.set_fact:
+        _udm_dns_username: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dns_record_creds_op_item,
+                    vault=unifi_network_dns_record_creds_op_vault,
+                    field=unifi_network_dns_record_creds_username_field) }}
+        _udm_dns_password: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dns_record_creds_op_item,
+                    vault=unifi_network_dns_record_creds_op_vault,
+                    field=unifi_network_dns_record_creds_password_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+
+    - name: "Authenticate against the UDM controller"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dns_record_controller_url }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ _udm_dns_username }}"
+          password: "{{ _udm_dns_password }}"
+        validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+        status_code: 200
+        return_content: false
+      register: _udm_dns_login
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      changed_when: false
+
+    - name: "Capture session cookie + CSRF token"
+      ansible.builtin.set_fact:
+        _udm_dns_cookie: "{{ _udm_dns_login.cookies_string }}"
+        _udm_dns_csrf: "{{ _udm_dns_login.x_csrf_token | default('') }}"
+      no_log: true
+
+    - name: "Assert CSRF token was returned"
+      ansible.builtin.assert:
+        that:
+          - _udm_dns_csrf | length > 0
+        fail_msg: |
+          UDM login succeeded but no X-CSRF-Token header came back.
+          Check the auth flow manually:
+            curl -ks {{ unifi_network_dns_record_controller_url }}/api/auth/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"...","password":"..."}' -i
+
+    - name: "GET current static DNS records (set B, pre-filter)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dns_record_controller_url }}/proxy/network/v2/api/site/{{ unifi_network_dns_record_site }}/static-dns"
+        method: GET
+        headers:
+          Cookie: "{{ _udm_dns_cookie }}"
+          X-CSRF-Token: "{{ _udm_dns_csrf }}"
+        validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_dns_existing
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # --- Full symmetric-set comparison ----------------------------------
+    - name: "Compute external-dns ownership exclusion set"
+      ansible.builtin.set_fact:
+        _udm_dns_excluded_keys: >-
+          {{ _udm_dns_existing.json
+             | dns_external_dns_owned_keys(unifi_network_dns_record_external_dns_heritage_marker) }}
+
+    - name: "Compute set A — desired NetBox state, zone-filtered, ownership-excluded"
+      ansible.builtin.set_fact:
+        _udm_dns_desired_records: >-
+          {{ _udm_dns_source_records
+             | dns_in_zone(unifi_network_dns_record_managed_zone_suffix)
+             | dns_exclude_owned(_udm_dns_excluded_keys) }}
+
+    - name: "Compute set B — current UDM state, zone-filtered, ownership-excluded"
+      ansible.builtin.set_fact:
+        _udm_dns_current_in_zone: >-
+          {{ _udm_dns_existing.json
+             | dns_in_zone(unifi_network_dns_record_managed_zone_suffix)
+             | dns_exclude_owned(_udm_dns_excluded_keys) }}
+
+    - name: "Compute orphans — in the UDM (set B) but not in NetBox (set A)"
+      ansible.builtin.set_fact:
+        _udm_dns_orphan_records: "{{ _udm_dns_current_in_zone | dns_orphans(_udm_dns_desired_records) }}"
+
+    - name: "Log orphans loudly (never auto-deleted — see spec Non-goals)"
+      ansible.builtin.debug:
+        msg: >-
+          UDM static-DNS record {{ item.record_type }} {{ item.key }} exists on the
+          controller but NetBox no longer (or never did) declare it. Not touched —
+          either backfill it into NetBox if it should exist, or remove it by hand
+          on the UDM if it shouldn't.
+      loop: "{{ _udm_dns_orphan_records }}"
+      loop_control:
+        label: "{{ item.record_type }} {{ item.key }}"
+
+    - name: "Reconcile each desired static DNS record (set A)"
+      ansible.builtin.include_tasks: reconcile_one.yml
+      loop: "{{ _udm_dns_desired_records }}"
+      loop_control:
+        loop_var: _udm_dns_record
+        label: "{{ _udm_dns_record.record_type }} {{ _udm_dns_record.key }} ({{ _udm_dns_record.state | default('present') }})"
+
+    - name: "Logout (best-effort session cleanup)"
+      ansible.builtin.uri:
+        url: "{{ unifi_network_dns_record_controller_url }}/api/auth/logout"
+        method: POST
+        headers:
+          Cookie: "{{ _udm_dns_cookie }}"
+          X-CSRF-Token: "{{ _udm_dns_csrf }}"
+        validate_certs: "{{ unifi_network_dns_record_validate_certs }}"
+        status_code: [200, 204]
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      no_log: true
+      check_mode: false
+      changed_when: false

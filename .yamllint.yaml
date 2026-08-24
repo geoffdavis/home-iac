@@ -1,0 +1,25 @@
+---
+# yamllint config for ansible/ — same relaxed profile ugreen-nas-compose
+# used for its Ansible tree.
+extends: relaxed
+
+rules:
+  line-length:
+    max: 200
+    level: warning
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  # ansible-lint's yaml rule requires both of these true even under a
+  # custom yamllint config, or it refuses to use the config at all
+  # (falls back to its own bundled default, which is where the
+  # line-length: max 200 above stops applying).
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+
+ignore: |
+  environments/
+  modules/

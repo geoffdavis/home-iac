@@ -1,0 +1,119 @@
+---
+# reconcile_one.yml — reconcile a single resolved reservation
+# (_udm_res_reservation: {ip, mac, hostname, netbox_id, network_id})
+# against the UDM's known-client list. Called in a loop from main.yml.
+#
+# We only own three fields on the client object: use_fixedip, fixed_ip,
+# network_id — never the device's discovered `name`/other fields, same
+# "project down to owned keys" pattern as unifi_network_dns_record and
+# unifi_network_port_forward use.
+#
+# Actions:
+#   found, drift    → PUT (update)
+#   found, match    → no-op
+#   not found       → POST (pre-provision a not-yet-connected client) --
+#                      UNVERIFIED against a live controller; see README.
+#
+# No DELETE / un-reserve path — see main.yml's header comment and the
+# README's "Known gaps".
+
+- name: "Find existing client by MAC — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_match: >-
+      {{ _udm_res_existing.json.data
+         | selectattr('mac', 'equalto', _udm_res_reservation.mac)
+         | list }}
+
+- name: "Build desired payload — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_desired:
+      mac: "{{ _udm_res_reservation.mac }}"
+      use_fixedip: true
+      fixed_ip: "{{ _udm_res_reservation.ip }}"
+      network_id: "{{ _udm_res_reservation.network_id }}"
+
+- name: "Compute drift — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.set_fact:
+    _udm_res_needs_update: >-
+      {{
+        _udm_res_match | length > 0 and
+        (_udm_res_match[0] | dict2items
+         | selectattr('key', 'in', _udm_res_desired.keys() | list)
+         | items2dict) != _udm_res_desired
+      }}
+
+- name: "Debug — current vs desired — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.debug:
+    msg:
+      - "reservation: {{ _udm_res_reservation.ip }} ({{ _udm_res_reservation.mac }})"
+      - "exists as known client: {{ _udm_res_match | length > 0 }}"
+      - "needs_update: {{ _udm_res_needs_update | default('N/A') }}"
+      - "current: {{ _udm_res_match[0] | default({}) | dict2items | selectattr('key', 'in', _udm_res_desired.keys() | list) | items2dict }}"
+      - "desired: {{ _udm_res_desired }}"
+
+# --- not found → POST ---
+# UNVERIFIED: whether POSTing a bare {mac, use_fixedip, fixed_ip,
+# network_id} to /rest/user actually pre-provisions a reservation for a
+# device the controller has never seen (vs. requiring the client to
+# exist first via prior DHCP/ARP discovery). Confirm live before relying
+# on this for a not-yet-connected device.
+- name: "POST (create known client + reservation) — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user"
+    method: POST
+    headers:
+      Cookie: "{{ _udm_res_cookie }}"
+      X-CSRF-Token: "{{ _udm_res_csrf }}"
+    body_format: json
+    body: "{{ _udm_res_desired }}"
+    validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _udm_res_match | length == 0
+
+- name: "Assert POST succeeded — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_res_create_result.json.meta.rc == 'ok'
+    fail_msg: "Reservation POST for '{{ _udm_res_reservation.mac }}' returned unexpected rc: {{ _udm_res_create_result.json }}"
+  when:
+    - _udm_res_match | length == 0
+    - not ansible_check_mode
+
+# --- found, drift → PUT ---
+- name: "PUT (update reservation) — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.uri:
+    url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user/{{ _udm_res_match[0]['_id'] }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _udm_res_cookie }}"
+      X-CSRF-Token: "{{ _udm_res_csrf }}"
+    body_format: json
+    body: "{{ _udm_res_desired }}"
+    validate_certs: "{{ unifi_network_ip_reservation_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_res_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _udm_res_match | length > 0
+    - _udm_res_needs_update | bool
+
+- name: "Assert PUT succeeded — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.assert:
+    that:
+      - _udm_res_update_result.json.meta.rc == 'ok'
+    fail_msg: "Reservation PUT for '{{ _udm_res_reservation.mac }}' returned unexpected rc: {{ _udm_res_update_result.json }}"
+  when:
+    - _udm_res_match | length > 0
+    - _udm_res_needs_update | bool
+    - not ansible_check_mode

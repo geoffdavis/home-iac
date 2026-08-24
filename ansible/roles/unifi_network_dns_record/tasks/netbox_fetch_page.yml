@@ -1,0 +1,34 @@
+---
+# netbox_fetch_page.yml — fetch one page of NetBox DNS records and
+# advance the pagination cursor. Included in a loop from main.yml
+# (loop_var: _page_num, unused except for the safety-cap count);
+# reads/writes _udm_dns_netbox_next_url + _udm_dns_netbox_results.
+#
+# NetBox's list endpoints return {count, next, previous, results: [...]}
+# -- `next` is either a full URL for the following page or null. Once
+# null, later iterations become no-ops (the `when` guards both tasks),
+# so looping past the last page is harmless, just wasted iterations up
+# to unifi_network_dns_record_netbox_max_pages.
+
+- name: "GET NetBox DNS records page {{ _page_num }}"
+  ansible.builtin.uri:
+    url: "{{ _udm_dns_netbox_next_url }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ _udm_dns_netbox_token }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_dns_record_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_dns_netbox_page
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: _udm_dns_netbox_next_url is not none
+
+- name: "Accumulate NetBox results + advance pagination cursor"
+  ansible.builtin.set_fact:
+    _udm_dns_netbox_results: "{{ _udm_dns_netbox_results + _udm_dns_netbox_page.json.results }}"
+    _udm_dns_netbox_next_url: "{{ _udm_dns_netbox_page.json.next }}"
+  no_log: true
+  when: _udm_dns_netbox_next_url is not none

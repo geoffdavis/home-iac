@@ -20,3 +20,13 @@ crash.log
 
 # Task runner
 .task/
+
+# Python (dev tooling for ansible/tests/)
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Ansible
+ansible/*.retry
+ansible/.ansible/

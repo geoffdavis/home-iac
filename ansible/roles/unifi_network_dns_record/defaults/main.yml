@@ -1,0 +1,96 @@
+---
+# unifi_network_dns_record: idempotent management of static DNS records
+# on a UDM Pro / UniFi Network controller via the REST API, sourced from
+# NetBox instead of host_vars. Runs entirely controller-side
+# (delegate_to: localhost).
+#
+# Rewritten from the ugreen-nas-compose original (home-iac#8, tracking
+# geoffdavis/ugreen-nas-compose#250) per
+# docs/superpowers/specs/2026-08-21-netbox-udm-sync-design.md. The
+# UDM-side auth flow and per-record diff/PUT logic (reconcile_one.yml)
+# are unchanged; what's new is where the desired record list comes from
+# (NetBox, not host_vars) and the full symmetric-set comparison +
+# external-dns ownership exclusion the design doc requires.
+
+# Opt-in. Default false so hosts with no DNS-record requirements inherit
+# a no-op.
+unifi_network_dns_record_enabled: false
+
+# Controller base URL. Shares the default with the other unifi_network_*
+# roles.
+unifi_network_dns_record_controller_url: "https://172.29.50.1"
+
+# Cert validation. UDM Pro ships with a self-signed cert by default.
+unifi_network_dns_record_validate_certs: false
+
+# UniFi site identifier.
+unifi_network_dns_record_site: "default"
+
+# 1Password lookup for the controller's admin credentials. Shares the
+# same item as the other unifi_network_* roles -- a single "Limited
+# Admin" UniFi account covers them all.
+unifi_network_dns_record_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_dns_record_creds_op_vault: "Automation"
+unifi_network_dns_record_creds_username_field: "username"
+unifi_network_dns_record_creds_password_field: "password"
+
+# --- Desired-state source -------------------------------------------
+#
+# "netbox" (default): query NetBox for the record list every run.
+# "static": use unifi_network_dns_record_records verbatim instead --
+# the escape hatch called for by plan Task 3 Step 1 / retired in Task 6.
+# Needed today because NetBox itself doesn't exist yet
+# (geoffdavis/nix-personal#542, Phase 1, still in flight) -- "static" is
+# also the only mode this role's tests can exercise end-to-end right
+# now.
+unifi_network_dns_record_source: "netbox"
+
+# Static escape hatch. Same shape as the original ugreen-nas-compose
+# role's records list (record_type, key, value, enabled, state). Ignored
+# when source == "netbox".
+unifi_network_dns_record_records: []
+
+# --- NetBox connection -----------------------------------------------
+unifi_network_dns_record_netbox_url: "https://netbox.home.geoffdavis.com"
+unifi_network_dns_record_netbox_validate_certs: true
+
+# Read-only NetBox API token, 1Password-sourced. MUST be a different
+# 1Password item than netbox_import_udm_state's backfill token (spec
+# Credentials: "two separate tokens, not one" -- the ongoing sync must
+# never hold write access to NetBox).
+unifi_network_dns_record_netbox_creds_op_item: "NetBox API Token (ansible, read-only)"
+unifi_network_dns_record_netbox_creds_op_vault: "Automation"
+unifi_network_dns_record_netbox_creds_token_field: "credential"
+
+# DNS-plugin endpoint + zone. netbox-dns is the spec's default candidate
+# (Open Questions: "an implementation-time decision, not asserted
+# here"). NOT verified against a live NetBox yet -- confirm the plugin
+# is actually installed and this endpoint shape matches once
+# nix-personal#542 lands, before trusting source: netbox in production.
+# If netbox-dns turns out unmaintained/incompatible, the documented
+# fallback is ipam.IPAddress's built-in dns_name field (A/AAAA only),
+# which needs its own query + transform, not a variant of this one.
+unifi_network_dns_record_netbox_records_endpoint: "/api/plugins/netbox-dns/records/"
+unifi_network_dns_record_netbox_zone: "home.geoffdavis.com"
+# Safety cap on paginated NetBox GETs (limit=200/page below) -- raise if
+# the zone ever exceeds ~4000 records.
+unifi_network_dns_record_netbox_page_limit: 200
+unifi_network_dns_record_netbox_max_pages: 20
+
+# Only reconcile UDM static-DNS records under this suffix (zone apex or
+# subdomain) -- keeps this role's view of "current UDM state" (set B)
+# scoped to the zone it actually owns, not every static-DNS record on
+# the controller regardless of origin.
+unifi_network_dns_record_managed_zone_suffix: "home.geoffdavis.com"
+
+# external-dns ownership marker this role must never touch (design doc,
+# "Ownership filter, and where it actually has to live"). Any UDM TXT
+# record whose value contains this substring marks its sibling name as
+# Kubernetes-owned; such names are excluded from both set A and set B
+# before comparison, so this sync can never propose creating, updating,
+# OR reporting-as-orphan a name external-dns manages, even if NetBox
+# happens to hold a conflicting record with the same key+type. NOT
+# verified live -- confirm pi-talos-home-ops's actual --txt-owner-id /
+# registry format against a real UDM static-DNS dump before trusting
+# this in production; see README "Known gaps".
+unifi_network_dns_record_external_dns_heritage_marker: "heritage=external-dns"

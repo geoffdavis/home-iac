@@ -1,0 +1,18 @@
+---
+# playbooks/unifi-network-netbox-sync.yml — one-way NetBox -> UDM sync
+# for static DNS records and DHCP fixed reservations. Separate from
+# unifi_network_dhcp_pxe / unifi_network_port_forward (still
+# host_vars-driven, per-NAS-host, and out of scope for this sync —
+# see docs/superpowers/specs/2026-08-21-netbox-udm-sync-design.md
+# Non-goals) — those roles aren't migrated into this repo yet; only the
+# two NetBox-sourced roles below live here so far (home-iac#8).
+#
+#   uv run --directory ansible ansible-playbook playbooks/unifi-network-netbox-sync.yml
+#   uv run --directory ansible ansible-playbook playbooks/unifi-network-netbox-sync.yml --check
+- name: Sync UDM static DNS + DHCP reservations from NetBox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - unifi_network_dns_record
+    - unifi_network_ip_reservation

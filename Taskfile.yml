@@ -61,3 +61,33 @@ tasks:
       - rm -rf environments/*/.terraform
       - rm -f environments/*/tfplan
       - rm -f environments/*/.terraform.lock.hcl
+
+  ansible:collections:
+    desc: Install Ansible collection dependencies
+    dir: ansible
+    cmds:
+      - uv run ansible-galaxy collection install -r collections/requirements.yml
+
+  ansible:check:
+    desc: Syntax-check + lint the Ansible tree (no live calls)
+    cmds:
+      - cd ansible && uv run --project .. ansible-playbook playbooks/unifi-network-netbox-sync.yml --syntax-check
+      # Run from the repo root (not ansible/) so ansible-lint's yamllint
+      # plugin picks up the root .yamllint.yaml (200-char lines) instead
+      # of its own bundled 160-char default; ANSIBLE_CONFIG points it at
+      # ansible/ansible.cfg's roles_path so role resolution still works
+      # from outside the ansible/ dir.
+      - ANSIBLE_CONFIG=ansible/ansible.cfg uv run ansible-lint ansible/
+
+  ansible:sync:
+    desc: Run the NetBox -> UDM sync playbook (--check by default; pass FORCE=1 to apply)
+    dir: ansible
+    vars:
+      CHECK_FLAG: '{{if .FORCE}}{{else}}--check{{end}}'
+    cmds:
+      - op run --env-file ../.env -- uv run ansible-playbook playbooks/unifi-network-netbox-sync.yml {{.CHECK_FLAG}}
+
+  ansible:test:
+    desc: Run the Ansible-side pytest suite (filter-plugin + drift-logic unit tests)
+    cmds:
+      - uv run pytest ansible/tests/ -v

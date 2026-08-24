@@ -1,0 +1,44 @@
+---
+# unifi_network_ip_reservation: push NetBox status=dhcp IP addresses to
+# the UDM Pro / UniFi Network controller's DHCP fixed-reservation list.
+# NEW role (home-iac#8, tracking geoffdavis/ugreen-nas-compose#250) --
+# neither this repo's other unifi_network_* roles nor the
+# ugreen-nas-compose originals touched reservations; static IP
+# assignment was 100% UDM-UI-manual before this. Closes the
+# pacificbeach-style "what's free on this VLAN" gap directly (spec Why).
+#
+# Runs entirely controller-side (delegate_to: localhost), same auth
+# pattern as unifi_network_dns_record.
+
+unifi_network_ip_reservation_enabled: false
+
+unifi_network_ip_reservation_controller_url: "https://172.29.50.1"
+unifi_network_ip_reservation_validate_certs: false
+unifi_network_ip_reservation_site: "default"
+
+unifi_network_ip_reservation_creds_op_item: "UniFi UDM Pro (ansible)"
+unifi_network_ip_reservation_creds_op_vault: "Automation"
+unifi_network_ip_reservation_creds_username_field: "username"
+unifi_network_ip_reservation_creds_password_field: "password"
+
+# --- NetBox connection -----------------------------------------------
+unifi_network_ip_reservation_netbox_url: "https://netbox.home.geoffdavis.com"
+unifi_network_ip_reservation_netbox_validate_certs: true
+
+# Read-only NetBox API token, 1Password-sourced. Same read-only 1P item
+# unifi_network_dns_record uses is fine to reuse here (both are
+# read-only consumers of the same token) -- do NOT reuse the
+# netbox_import_udm_state backfill role's write-scoped token.
+unifi_network_ip_reservation_netbox_creds_op_item: "NetBox API Token (ansible, read-only)"
+unifi_network_ip_reservation_netbox_creds_op_vault: "Automation"
+unifi_network_ip_reservation_netbox_creds_token_field: "credential"
+
+# Only IP addresses whose containing prefix carries this NetBox tag are
+# considered "tracked" (spec: "Reads NetBox status=dhcp IP addresses for
+# tracked prefixes"). Keeps a bare status=dhcp query from trying to
+# reserve addresses on prefixes this role was never meant to manage
+# (WAN-side allocations, other sites' internal ranges before they're
+# reviewed, etc).
+unifi_network_ip_reservation_netbox_tag: "unifi-managed"
+unifi_network_ip_reservation_netbox_page_limit: 200
+unifi_network_ip_reservation_netbox_max_pages: 20
