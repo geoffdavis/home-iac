@@ -49,7 +49,6 @@ vm_query_filters:
 
 interfaces: false # see the ansible_host note below for why this doesn't help compose
 services: false
-flatten_custom_fields: true # fleet_site (logical realm code) arrives this way, see below
 config_context: true # this is how group_vars-equivalent data arrives
 flatten_config_context: true # flat host_vars, not nested under .config_context
 plurals: false # `role`/`site`/`status` singular, matching today's flat host_vars shape
@@ -60,6 +59,33 @@ group_by:
   - role
   - site
   - status # surfaces nas-sct/jetkvm-sct-01's "staged" status as its own group
+
+# `site`: native site.slug is authoritative for 4 of the 6 hosts -- NetBox
+# Site here means physical location, and for nas-sdg/nas-cin/ipa-sdg/
+# ipa-cin that already IS the fleet's realm/DNS-suffix code (sdg/cin).
+# Only nas-sct and ipa-sct diverge: physically staged in San Diego,
+# logically Scottsdale -- self-resolves the moment they actually ship (at
+# which point their native site.slug becomes "sct" on its own and this
+# override stops mattering). For those two, and ONLY those two, a
+# `staging_target_site` custom field carries the eventual slug; it's
+# unset (null) on the other 4 -- not a parallel taxonomy carried forever
+# on every host, just a transient flag for the staged minority, cleared
+# as part of a host's actual ship checklist. `compose` (not
+# local_context_data/config_context) is what makes this override work
+# without a name collision: this plugin merges native device attributes
+# (including `site`) AFTER config_context, so a config-context-sourced
+# `site` value gets silently clobbered by the native field regardless of
+# weight (`--flush-cache` made no difference when this was tried live
+# 2026-08-25 -- not a caching issue, a real merge-order behavior, and
+# `rename_variables` runs too late to fix it: only one same-named key
+# survives the collision by the time it executes). `compose` runs last,
+# after native-field merging, so it's the one place an override to `site`
+# actually sticks.
+compose:
+  site: >-
+    custom_fields.staging_target_site
+    if (status.value == 'staged' and custom_fields.staging_target_site)
+    else site.slug
 
 # `ansible_host`: set per-host in NetBox's `local_context_data`, matching
 # inventory.yml's existing per-host choices exactly (nas-sdg over the LAN
@@ -76,40 +102,14 @@ group_by:
 # `compose: {ansible_host: "interfaces | selectattr('name','equalto','wt0')..."}`
 # should have been able to pull ansible_host from that, no duplication.
 # It doesn't work: `interfaces is defined` evaluates to `false` inside
-# `compose` -- this plugin evaluates compose BEFORE the interfaces data
-# gets attached to hostvars, a real ordering limitation, not a Jinja bug
-# to work around with more filters. Falling back to local_context_data is
-# the pragmatic choice, not the ideal one -- the wt0 interfaces/IPs still
+# `compose` -- unlike `custom_fields`/`site`/`status` (core attributes
+# present on every device/VM API response from the start), `interfaces`
+# is bolted on by a separate API call this plugin makes AFTER compose
+# already ran -- a real ordering limitation, not a Jinja bug to work
+# around with more filters. Falling back to local_context_data is the
+# pragmatic choice, not the ideal one -- the wt0 interfaces/IPs still
 # exist in NetBox as correct DCIM/IPAM data (useful for topology/UI
 # purposes) even though this plugin can't wire them into ansible_host.
-#
-# `fleet_site`: the fleet's realm/DNS-suffix code (sdg/sct/cin) -- WHICH
-# LOGICAL SEGMENT a host belongs to, not where it currently sits. This one
-# genuinely has no NetBox-native equivalent (NetBox only models physical
-# location), so it's a real custom field (`fleet_site`, on both
-# dcim.device and virtualization.virtualmachine), not a config-context
-# JSON blob -- structured, UI-visible, queryable NetBox data about the
-# device, which is what it actually is. NetBox's native `site` field is
-# physical location -- correct for "where is this box today" (nas-sct is
-# honestly modeled as staged in San Diego, not yet shipped to Scottsdale),
-# wrong for this value, which would silently read "sdg" for nas-sct until
-# it actually ships. These two axes coincide for nas-sdg and nas-cin
-# today, which is exactly what made a single-host check insufficient --
-# only diffing nas-sct against the static inventory surfaced it.
-#
-# A `site`-named custom field or config-context key would have collided
-# with NetBox's own native `site` field the same way a first attempt at
-# this (local_context_data key literally named `site`) did: the plugin
-# merges native device attributes AFTER config_context, so the native
-# field silently won regardless of weight (`--flush-cache` made no
-# difference -- not a caching issue, a real merge-order behavior).
-# `rename_variables` runs too late to fix a collision like that: by the
-# time it executes, only one "site" key survives, so renaming it just
-# relocates the already-wrong value under a new name. `fleet_site` avoids
-# the collision at the source instead -- confirmed via grep that no
-# role/playbook here references `{{ site }}` directly (only
-# group_vars/*.yml, which this file doesn't touch), so the rename cost
-# nothing.
 
 # NetBox's own device/VM `tags` and `serial` fields collide with Ansible's
 # reserved keywords of the same name (task/CLI tag filtering, play-level
