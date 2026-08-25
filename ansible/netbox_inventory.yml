@@ -2,13 +2,27 @@
 # ansible/netbox_inventory.yml — dynamic inventory sourced from NetBox,
 # replacing the static inventory.yml + group_vars/ + host_vars/ pattern.
 #
-# CUTOVER STATUS: runs alongside inventory.yml, not yet the sole source.
-# Taskfile.yml's ansible:run/ansible:check still point at inventory.yml.
-# Prove equivalence first:
+# CUTOVER STATUS: live -- Taskfile.yml's ansible:run points here as of
+# 2026-08-25 (ansible:check deliberately still doesn't; see its own task
+# comment for why). inventory.yml/group_vars/host_vars are kept, not yet
+# deleted -- a fallback (`ansible-playbook -i inventory.yml ...`) costs
+# nothing to keep around and the next real playbook run against real
+# infra is the actual proof this works, not just the diff below.
+#
+# Equivalence method, re-run after any change here:
 #   ansible-inventory -i inventory.yml --list > /tmp/static.json
 #   ansible-inventory -i netbox_inventory.yml --list > /tmp/dynamic.json
-# then diff the host lists and the vars each role actually consumes (not a
-# blind full-JSON diff -- group-membership internals differ cosmetically).
+# then diff the host lists AND, critically, the exact GROUP NAMES (not
+# just vars) -- caught live 2026-08-25: the NetBox Tags were first named
+# nas_fleet/freeipa_replica/freeipa_bootstrap (descriptive, but not
+# matching anything), and every one of this repo's 5 playbooks targets
+# `hosts: nas_nixos` or `hosts: ipa_replicas` by literal name. Flipping
+# Taskfile.yml with mismatched group names would have made every play
+# silently match zero hosts -- an empty, "successful" run, the worst kind
+# of failure. Tag slugs now match the playbooks' own group names exactly
+# (nas_nixos / ipa_replicas / ipa_bootstrap); ipa_secondary was never
+# actually used as a hosts: target or --limit anywhere live (checked via
+# grep across playbooks/ and roles/), so no 4th tag exists for it.
 # Requires pytz (and pynetbox) on the Python resolving ansible-inventory --
 # missing as of 2026-08-25 (no pyproject.toml/uv.lock in this repo, `uv run`
 # just fell through to the same system binary), fixed the same day via
@@ -27,15 +41,13 @@
 # unifi_network_ip_reservation/netbox_import_udm_state all
 # delegate_to: localhost and hit the UDM's REST API directly).
 #
-# Ansible group membership (nas_nixos / ipa_replicas / ipa_bootstrap /
-# ipa_secondary) is now driven by NetBox Tags, not Roles -- Device Role is
-# a physical/inventory taxonomy (what kind of box), Tags are the
-# functional/Ansible-grouping taxonomy (what plays run against it). See
-# NetBox config contexts scoped to the nas_fleet / freeipa_replica /
-# freeipa_bootstrap tags for the group_vars-equivalent data (tag slugs use
-# underscores, matching this repo's own group-naming convention -- a
-# hyphenated slug produces an Ansible group name ansible-inventory itself
-# warns about and can't cleanly reference without bracket notation).
+# Ansible group membership (nas_nixos / ipa_replicas / ipa_bootstrap) is
+# now driven by NetBox Tags, not Roles -- Device Role is a
+# physical/inventory taxonomy (what kind of box), Tags are the
+# functional/Ansible-grouping taxonomy (what plays run against it), and
+# here the tag slugs ARE the group names verbatim (see above). See NetBox
+# config contexts scoped to those same 3 tags for the group_vars-
+# equivalent data.
 plugin: netbox.netbox.nb_inventory
 api_endpoint: http://172.29.10.20:8080
 token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"

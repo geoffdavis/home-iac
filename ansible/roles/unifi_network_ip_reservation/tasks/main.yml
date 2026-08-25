@@ -54,7 +54,7 @@
 
     - name: "Fetch all NetBox status=dhcp IP-address pages"
       ansible.builtin.include_tasks: netbox_fetch_page.yml
-      loop: "{{ range(0, unifi_network_ip_reservation_netbox_max_pages) }}"
+      loop: "{{ range(0, unifi_network_ip_reservation_netbox_max_pages) | list }}"
       loop_control:
         loop_var: _page_num
 
