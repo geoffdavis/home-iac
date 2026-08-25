@@ -62,6 +62,11 @@ tasks:
       - rm -f environments/*/tfplan
       - rm -f environments/*/.terraform.lock.hcl
 
+  lint:
+    desc: Run the full pre-commit hook set (Terraform, Ansible, secrets, YAML, workflow lint)
+    cmds:
+      - pre-commit run --all-files
+
   ansible:install:
     desc: Install the pinned Ansible collection dependencies
     dir: ansible

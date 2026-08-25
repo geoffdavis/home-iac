@@ -5,6 +5,18 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: mixed-line-ending
+      # Jinja `{{ }}` inside a plain YAML scalar (every Ansible var
+      # default, every host_vars template string) is valid YAML text on
+      # its own -- this only catches genuinely broken syntax, not
+      # templating. No excludes needed.
+      - id: check-yaml
+      # This repo's roles handle real SSH keys and FreeIPA/UDM
+      # credentials (via 1Password op run, never committed) -- this is
+      # the backstop for the day someone pastes a key into the wrong
+      # file by mistake.
+      - id: detect-private-key
 
   - repo: https://github.com/antonbabenko/pre-commit-terraform
     rev: v1.99.1
@@ -40,3 +52,28 @@ repos:
         # relative to the repo root instead and fails every playbook with
         # syntax-check[specific]: role not found.
         args: [--project-dir, ansible]
+
+  # YAML style outside ansible/ (Taskfile.yml, .github/workflows/, this
+  # file itself) -- ansible-lint already owns YAML style inside ansible/
+  # via its own embedded yamllint rules; see .yamllint.yml's ignore list.
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+
+  # Secret scan on staged content, redacted output -- closes the window
+  # between a commit landing locally and GitGuardian's server-side scan
+  # (post-push) catching the same thing. Matches nix-personal's own
+  # pre-commit convention.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  # Lints .github/workflows/ci.yml and any future workflow files --
+  # pre-commit provisions its own golang toolchain for this hook, no
+  # system Go install required.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
