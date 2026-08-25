@@ -9,11 +9,15 @@
 #   ansible-inventory -i netbox_inventory.yml --list > /tmp/dynamic.json
 # then diff the host lists and the vars each role actually consumes (not a
 # blind full-JSON diff -- group-membership internals differ cosmetically).
-# Requires pytz on the Python resolving ansible-inventory -- not present
-# in this repo's ambient environment as of 2026-08-25 (no pyproject.toml/
-# uv.lock here, `uv run` just falls through to the same system binary);
-# fix that persistently before this can be the real ansible:run/check
-# target, don't paper over it with a per-invocation PYTHONPATH hack.
+# Requires pytz (and pynetbox) on the Python resolving ansible-inventory --
+# missing as of 2026-08-25 (no pyproject.toml/uv.lock in this repo, `uv run`
+# just fell through to the same system binary), fixed the same day via
+# nix-common#167 (ansible's withNetbox = true) + nix-personal#616, active
+# on this dev machine after `task switch:windansea`. Verified live: runs
+# clean with no PYTHONPATH workaround needed. Still worth a proper
+# pyproject.toml/uv.lock for this repo at some point, so Ansible tooling
+# here doesn't depend on whatever happens to be on a given dev machine's
+# system Python -- not attempted here.
 #
 # Scope: role=server catches exactly the 6 hosts this repo's Ansible
 # targets today (nas-sdg/sct/cin devices + ipa-sdg/sct/cin VMs, all tagged
