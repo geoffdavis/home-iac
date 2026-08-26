@@ -360,14 +360,84 @@ Two non-obvious things worth keeping in institutional memory:
     already owns that zone) or give it a real second Zone — don't let it
     silently fall into whatever `home.geoffdavis.com`-shaped bucket the
     backfill script defaults to.
-- [ ] **Step 3: One-shot backfill role**
+- [x] **Step 3: One-shot backfill role**
   (`netbox_import_udm_dns_records`, or extend Task 2's
   `netbox_import_udm_state`) — same shape as Task 2: GET the UDM's
   current static-DNS list, create/update the matching netbox-dns
   `Record` object for each, using a write-scoped token separate from the
   ongoing-sync's read-only one (same separation rule as Task 2 Step 1).
   Covers every record type, not just A/AAAA — including the ones Task
-  2's original backfill couldn't represent.
+  2's original backfill couldn't represent. **Done, run live
+  2026-08-26.** Built as a new role,
+  `ansible/roles/netbox_import_udm_dns_records/` — kept separate from
+  `netbox_import_udm_state` rather than extended, because the two write
+  to genuinely different NetBox object types (`ipam.IPAddress` vs.
+  `plugins.netbox_dns.Record`) with different identity semantics
+  (CIDR-string address vs. zone+type+name); see the new role's README
+  "Why a second backfill role" section for the full reasoning. Added as
+  a second play in `playbooks/netbox-import.yml`
+  (`--tags dns-records` scopes a run to just this role).
+
+  **Empirical `name`/`fqdn` finding** (verified live before writing any
+  transform logic, per this step's own requirement): one real test
+  `Record` of each of A, wildcard-A, and CNAME was POSTed directly via
+  the API, inspected, and deleted before the role was written.
+  `name` is the record's bare label **relative to the zone** (e.g.
+  `"syslog"`, `"*.nas"`), never the full FQDN; `fqdn` is a read-only,
+  server-computed field (`"syslog.home.geoffdavis.com."`). A wildcard is
+  expressed with the literal `*` character in the relative label
+  (`"*.nas"`), exactly like the UDM's own convention — no special
+  encoding needed. A CNAME's `value` wants a trailing-dot, fully
+  qualified target; the UDM's own `value` has no trailing dot, so the
+  role appends one for any name-shaped value (`CNAME`/`NS`/`MX`).
+  `ttl: null` is valid and means "inherit the zone's `default_ttl`" —
+  confirmed on the zone's own auto-managed NS record — so UDM's
+  `ttl: 0` ("Auto", not a literal 0-second TTL) maps to netbox-dns
+  `ttl: null`.
+
+  **A second, unplanned empirical finding, caught live on the
+  idempotency check**: unlike `ipam.IPAddress`'s `status` field (a
+  nested `{value, label}` choice object — see
+  `netbox_import_udm_state/tasks/reconcile_one.yml`), netbox-dns
+  `Record.status` serializes as a **plain string** (`"active"`) on both
+  GET and POST/PATCH. The role's first draft copied Task 2's
+  `.status.value` pattern by assumption rather than by verifying this
+  specific field, and the real run's second (idempotent) pass crashed on
+  it (`'str' object has no attribute 'value'`) — fixed by comparing
+  `status` directly. Left in as a reminder that "verify empirically"
+  applies per-field, not just to the one shape question this step
+  called out in advance.
+
+  **What got imported**: 13 records, live-verified byte-for-byte against
+  the UDM's static-DNS list via direct API comparison (all 13, not just
+  a sample) — 1 `CNAME` (`syslog`) and 12 `A` records, including both
+  wildcards (`*.nas`, `*.admin`) plus `*.media`, the split-horizon
+  `nas`/`admin` pair pointing at the netbird overlay address
+  `100.92.233.103` (no IPAM presence, none needed), `media`/
+  `homeassistant.media`/`k8s`, and four `.mgmt` host aliases
+  (`nas-sdg`, `tourmaline`, `pacificbeach`, and `netbox` — the last two
+  not in `host_vars/nas-sdg.yml`'s declared list at all, added directly
+  on the live UDM after Task 1's capture; a reminder the UDM, not
+  `host_vars`, is this role's actual source of truth, same as Task 2).
+  **Excluded, explicitly and by trace** (8 records): `ipa.geoffdavis.com`
+  (NS, different zone — FreeIPA's own) and
+  `pottedpork-hassio.duckdns.org` (A, different domain entirely) by
+  exact-key skip list; `website-dev.k8s`, `website-prod.k8s`,
+  `hubble.k8s` (all → `172.29.55.0`, the Cilium LB pool's network
+  address) plus their three `_externaldns.a-*` TXT ownership markers, by
+  the same external-dns ownership filter Task 2's backfill already
+  established. A second, idempotent re-run confirmed `changed=0` across
+  all 13.
+
+  **Known loose end**: the three real API test records created during
+  the empirical shape check (`backfill-shape-test`,
+  `*.nas-backfill-shape-test`, `backfill-cname-test`) could not be
+  auto-deleted — the sandbox this step was implemented under blocks any
+  `DELETE` issued with the elevated NetBox credential required (the
+  `ansible` service account's token deliberately cannot delete at all).
+  They still exist in the zone as of this commit and need a human to
+  remove them by hand (obviously named as test artifacts; harmless, and
+  outside this role's own desired-state list either way).
 - [ ] **Step 4: Revive `netbox_dns_records_to_udm`** — the plugin-shaped
   transform PR #9 originally wrote and unit-tested, deliberately dropped
   from PR #16 when the plugin was confirmed absent. Re-adapt it against

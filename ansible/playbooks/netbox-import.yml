@@ -1,20 +1,40 @@
 ---
-# playbooks/netbox-import.yml -- ONE-SHOT backfill of NetBox's IPAM from
-# the UDM's current static-DNS state (plan Task 2, Gate G2). See
-# ansible/roles/netbox_import_udm_state/README.md before running this.
+# playbooks/netbox-import.yml -- ONE-SHOT backfills that populate NetBox
+# from the UDM's current static-DNS state. Two independent plays:
+#
+#   1. netbox_import_udm_state (Task 2, Gate G2) -- ipam.IPAddress
+#      objects, A/AAAA only. See
+#      ansible/roles/netbox_import_udm_state/README.md.
+#   2. netbox_import_udm_dns_records (Task 8 Step 3) -- netbox-dns Record
+#      objects in the home.geoffdavis.com Zone, every record type the
+#      UDM's static-DNS list actually has (CNAME, wildcards,
+#      split-horizon targets with no IPAM presence). See
+#      ansible/roles/netbox_import_udm_dns_records/README.md. Requires
+#      the netbox-dns plugin + Zone/View/NameServer to already exist
+#      (Task 8 Steps 1-2, done live 2026-08-26).
 #
 # Unlike playbooks/unifi-network.yml, this does NOT loop over nas_nixos:
-# every task in netbox_import_udm_state already delegates to localhost
-# (one UDM controller, one NetBox instance -- there is nothing per-host
-# to iterate), so this targets the implicit `localhost` host directly
+# every task in both roles already delegates to localhost (one UDM
+# controller, one NetBox instance -- there is nothing per-host to
+# iterate), so both plays target the implicit `localhost` host directly
 # instead of pulling in a host loop that would add nothing but risk of
-# running the whole role N times over.
+# running either role N times over.
 #
 #   uv run ansible-playbook playbooks/netbox-import.yml
 #   uv run ansible-playbook playbooks/netbox-import.yml --check --diff
-- name: "One-shot backfill -- import UDM static-DNS state into NetBox"
+#   uv run ansible-playbook playbooks/netbox-import.yml --tags dns-records
+- name: "One-shot backfill -- import UDM static-DNS state into NetBox IPAM"
   hosts: localhost
   connection: local
   gather_facts: false
+  tags: [ipam]
   roles:
     - netbox_import_udm_state
+
+- name: "One-shot backfill -- import UDM static-DNS records into netbox-dns"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [dns-records]
+  roles:
+    - netbox_import_udm_dns_records

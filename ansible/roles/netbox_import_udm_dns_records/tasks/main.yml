@@ -1,0 +1,242 @@
+---
+# netbox_import_udm_dns_records: one-shot backfill, UDM static-DNS -> the
+# netbox-dns plugin's Record model.
+#
+# Flow (same shape as netbox_import_udm_state, Task 2):
+#   1. Resolve NetBox's write-scoped token + the UDM admin creds from
+#      1Password.
+#   2. Authenticate against the UDM (same cookie+CSRF flow as
+#      unifi_network_dns_record / netbox_import_udm_state) and GET its
+#      current static-DNS list.
+#   3. Build the exclusion set of external-dns-owned names (ownership TXT
+#      markers), same as Task 2.
+#   4. Build the desired record list: every remaining record (any
+#      record_type, not just A/AAAA), minus the explicit skip list
+#      (defaults/main.yml) and minus anything external-dns owns (both the
+#      A/AAAA target AND the TXT marker record itself).
+#   5. Transform each into netbox-dns's Record shape (name relative to the
+#      zone, trailing-dot FQDN values for name-shaped targets, ttl 0 ->
+#      null so the record inherits the zone's default_ttl).
+#   6. Print the full desired set (the "dry survey" -- there is no real
+#      --check mode for this plugin's custom endpoints).
+#   7. Reconcile each desired record against NetBox: GET by
+#      zone+type+name, create (POST) if absent, update (PATCH) on drift,
+#      no-op on match. Never deletes.
+
+- name: "Fetch NetBox write-scoped token from 1Password"
+  ansible.builtin.set_fact:
+    _nb_dns_netbox_token: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_dns_records_netbox_token_op_item,
+                vault=netbox_import_udm_dns_records_netbox_token_op_vault,
+                field=netbox_import_udm_dns_records_netbox_token_op_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: "Assert the NetBox token was resolved"
+  ansible.builtin.assert:
+    that:
+      - _nb_dns_netbox_token | length > 0
+    fail_msg: >-
+      No value came back from 1Password item
+      '{{ netbox_import_udm_dns_records_netbox_token_op_item }}' (vault
+      '{{ netbox_import_udm_dns_records_netbox_token_op_vault }}', field
+      '{{ netbox_import_udm_dns_records_netbox_token_op_field }}'). See
+      the Task 8 status note in
+      docs/superpowers/plans/2026-08-21-netbox-udm-sync.md for how this
+      token (the dedicated `ansible` NetBox service account) was minted.
+
+- name: "Fetch UDM admin credentials from 1Password"
+  ansible.builtin.set_fact:
+    _nb_dns_udm_username: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_dns_records_udm_creds_op_item,
+                vault=netbox_import_udm_dns_records_udm_creds_op_vault,
+                field=netbox_import_udm_dns_records_udm_creds_username_field) }}
+    _nb_dns_udm_password: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_dns_records_udm_creds_op_item,
+                vault=netbox_import_udm_dns_records_udm_creds_op_vault,
+                field=netbox_import_udm_dns_records_udm_creds_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: "Authenticate against the UDM controller"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_dns_records_udm_controller_url }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ _nb_dns_udm_username }}"
+      password: "{{ _nb_dns_udm_password }}"
+    validate_certs: "{{ netbox_import_udm_dns_records_udm_validate_certs }}"
+    status_code: 200
+    return_content: false
+  register: _nb_dns_udm_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+- name: "Capture UDM session cookie + CSRF token"
+  ansible.builtin.set_fact:
+    _nb_dns_udm_cookie: "{{ _nb_dns_udm_login.cookies_string }}"
+    _nb_dns_udm_csrf: "{{ _nb_dns_udm_login.x_csrf_token | default('') }}"
+  no_log: true
+
+- name: "Assert UDM CSRF token was returned"
+  ansible.builtin.assert:
+    that:
+      - _nb_dns_udm_csrf | length > 0
+    fail_msg: "UDM login succeeded but no X-CSRF-Token header came back."
+
+- name: "GET the UDM's current static-DNS list"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_dns_records_udm_controller_url }}/proxy/network/v2/api/site/{{ netbox_import_udm_dns_records_udm_site }}/static-dns"
+    method: GET
+    headers:
+      Cookie: "{{ _nb_dns_udm_cookie }}"
+      X-CSRF-Token: "{{ _nb_dns_udm_csrf }}"
+    validate_certs: "{{ netbox_import_udm_dns_records_udm_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _nb_dns_udm_static_dns
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Build external-dns ownership-exclusion set (A/AAAA target names)"
+  ansible.builtin.set_fact:
+    _nb_dns_exclusion_names: >-
+      {{
+        _nb_dns_udm_static_dns.json
+        | selectattr('record_type', 'equalto', 'TXT')
+        | selectattr('value', 'search', 'heritage=external-dns')
+        | map(attribute='key')
+        | map('regex_replace', '^' + netbox_import_udm_dns_records_externaldns_txt_prefix, '')
+        | list
+      }}
+
+- name: "Debug -- external-dns-owned target names excluded from this backfill"
+  ansible.builtin.debug:
+    var: _nb_dns_exclusion_names
+
+- name: "Build external-dns ownership-exclusion set (the TXT marker records themselves)"
+  ansible.builtin.set_fact:
+    _nb_dns_txt_marker_keys: >-
+      {{
+        _nb_dns_udm_static_dns.json
+        | selectattr('record_type', 'equalto', 'TXT')
+        | selectattr('value', 'search', 'heritage=external-dns')
+        | map(attribute='key')
+        | list
+      }}
+
+- name: "Build desired record list -- every type, minus explicit + external-dns skips"
+  ansible.builtin.set_fact:
+    _nb_dns_desired_raw: >-
+      {{
+        _nb_dns_udm_static_dns.json
+        | rejectattr('key', 'in', netbox_import_udm_dns_records_explicit_skip_keys)
+        | rejectattr('key', 'in', _nb_dns_exclusion_names)
+        | rejectattr('key', 'in', _nb_dns_txt_marker_keys)
+        | list
+      }}
+
+- name: "Debug -- records skipped as explicit or external-dns-owned"
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        _nb_dns_udm_static_dns.json
+        | rejectattr('key', 'in', (_nb_dns_desired_raw | map(attribute='key') | list))
+        | map(attribute='key')
+        | list
+      }}
+
+- name: "Assert every remaining key is inside the target zone"
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.key == netbox_import_udm_dns_records_netbox_zone_name
+        or item.key is match('.*\.' + (netbox_import_udm_dns_records_netbox_zone_name | regex_escape) + '$')
+    fail_msg: >-
+      Record key '{{ item.key }}' is not inside zone
+      '{{ netbox_import_udm_dns_records_netbox_zone_name }}' and was not
+      caught by the explicit skip list -- add it there (with a reason)
+      before re-running, same as ipa.geoffdavis.com and
+      pottedpork-hassio.duckdns.org.
+  loop: "{{ _nb_dns_desired_raw }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "Transform each desired UDM record into netbox-dns Record shape"
+  ansible.builtin.set_fact:
+    _nb_dns_desired: "{{ (_nb_dns_desired | default([])) + [_nb_dns_finalized] }}"
+  vars:
+    # Relative `name`: strip the zone suffix. Zone-apex keys (key ==
+    # zone name exactly) become "@" -- netbox-dns's own convention, seen
+    # live on the auto-managed SOA/NS records. None of nas-sdg's records
+    # are apex records today, but this stays correct if one ever is.
+    _nb_dns_name: >-
+      {{
+        '@' if item.key == netbox_import_udm_dns_records_netbox_zone_name
+        else item.key[:-(netbox_import_udm_dns_records_netbox_zone_name | length + 1)]
+      }}
+    # name-shaped record types need an absolute (trailing-dot) target;
+    # A/AAAA values are plain IP literals and are left untouched.
+    # Confirmed empirically 2026-08-26: netbox-dns accepts (and this
+    # sync always sends) a trailing-dot FQDN for CNAME's value.
+    _nb_dns_value: >-
+      {{
+        (item.value + '.')
+        if (item.record_type in ['CNAME', 'NS', 'MX']) and not item.value.endswith('.')
+        else item.value
+      }}
+    # UDM reports ttl 0 for "not explicitly set" (Auto) -- map that to
+    # netbox-dns ttl: null so the record inherits the zone's
+    # default_ttl (3600) instead of asserting a fake explicit 0.
+    # Confirmed live 2026-08-26 that a null ttl is a valid Record value
+    # (the auto-managed NS record carries ttl: null).
+    _nb_dns_ttl: "{{ None if (item.ttl | int) == 0 else (item.ttl | int) }}"
+    _nb_dns_finalized:
+      zone: "{{ netbox_import_udm_dns_records_netbox_zone_id }}"
+      type: "{{ item.record_type }}"
+      name: "{{ _nb_dns_name }}"
+      value: "{{ _nb_dns_value }}"
+      ttl: "{{ _nb_dns_ttl }}"
+      status: "{{ 'active' if (item.enabled | default(true)) else 'inactive' }}"
+      description: "Imported from UDM static-DNS by netbox_import_udm_dns_records"
+  loop: "{{ _nb_dns_desired_raw }}"
+  loop_control:
+    label: "{{ item.key }} ({{ item.record_type }})"
+
+- name: "Dry survey -- full desired netbox-dns Record set for this backfill"
+  ansible.builtin.debug:
+    var: _nb_dns_desired
+
+- name: "Reconcile each desired Record against netbox-dns"
+  ansible.builtin.include_tasks: reconcile_one.yml
+  loop: "{{ _nb_dns_desired }}"
+  loop_control:
+    loop_var: _nb_dns_record
+    label: "{{ _nb_dns_record.type }} {{ _nb_dns_record.name }} -> {{ _nb_dns_record.value }}"
+
+- name: "Best-effort logout (UDM session cleanup)"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_dns_records_udm_controller_url }}/api/auth/logout"
+    method: POST
+    headers:
+      Cookie: "{{ _nb_dns_udm_cookie }}"
+      X-CSRF-Token: "{{ _nb_dns_udm_csrf }}"
+    validate_certs: "{{ netbox_import_udm_dns_records_udm_validate_certs }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  no_log: true
+  check_mode: false
+  changed_when: false
