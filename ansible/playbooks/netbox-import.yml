@@ -1,0 +1,20 @@
+---
+# playbooks/netbox-import.yml -- ONE-SHOT backfill of NetBox's IPAM from
+# the UDM's current static-DNS state (plan Task 2, Gate G2). See
+# ansible/roles/netbox_import_udm_state/README.md before running this.
+#
+# Unlike playbooks/unifi-network.yml, this does NOT loop over nas_nixos:
+# every task in netbox_import_udm_state already delegates to localhost
+# (one UDM controller, one NetBox instance -- there is nothing per-host
+# to iterate), so this targets the implicit `localhost` host directly
+# instead of pulling in a host loop that would add nothing but risk of
+# running the whole role N times over.
+#
+#   uv run ansible-playbook playbooks/netbox-import.yml
+#   uv run ansible-playbook playbooks/netbox-import.yml --check --diff
+- name: "One-shot backfill -- import UDM static-DNS state into NetBox"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - netbox_import_udm_state

@@ -95,6 +95,7 @@ tasks:
         playbooks/freeipa-rsyslog.yml
         playbooks/nixos-freeipa-vm.yml
         playbooks/unifi-network.yml
+        playbooks/netbox-import.yml
 
   ansible:run:
     desc: >-

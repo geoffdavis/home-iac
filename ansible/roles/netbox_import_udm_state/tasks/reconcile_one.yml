@@ -1,0 +1,122 @@
+---
+# reconcile_one.yml -- create or update one ipam.IPAddress object in
+# NetBox. Called in a loop from main.yml; loop_var is `_nb_import_record`,
+# a dict with address (CIDR string), dns_name, status, description.
+#
+# Identity: NetBox's `address` filter matches on the exact CIDR string
+# (host + prefix length together) in the NetBox versions this role has
+# been checked against (4.6.x) -- if a matching object exists under a
+# DIFFERENT mask (unlikely here since defaults/main.yml's VLAN table is
+# the only source of truth for mask length), this will create a second
+# object rather than update the first. NetBox does not enforce global
+# address uniqueness by default, so that fails open (an extra object,
+# not silent data loss) rather than closed -- worth knowing, not
+# currently guarded against.
+#
+# Never deletes -- this role only ever POSTs or PATCHes.
+
+- name: "GET existing NetBox IP address object -- {{ _nb_import_record.address }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_state_netbox_url }}/api/ipam/ip-addresses/?address={{ _nb_import_record.address | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _nb_import_netbox_token }}"
+      Host: "{{ netbox_import_udm_state_netbox_host_header }}"
+    validate_certs: true
+    status_code: 200
+    return_content: true
+  register: _nb_import_existing
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Compute desired vs. current -- {{ _nb_import_record.address }}"
+  ansible.builtin.set_fact:
+    _nb_import_match: "{{ _nb_import_existing.json.results }}"
+    _nb_import_desired_fields:
+      dns_name: "{{ _nb_import_record.dns_name | default('') }}"
+      status: "{{ _nb_import_record.status | default('active') }}"
+      description: "{{ _nb_import_record.description | default('') }}"
+
+- name: "Debug -- current vs desired -- {{ _nb_import_record.address }}"
+  ansible.builtin.debug:
+    msg:
+      - "address: {{ _nb_import_record.address }}"
+      - "exists: {{ _nb_import_match | length > 0 }}"
+      - "desired: {{ _nb_import_desired_fields }}"
+      - >-
+        current:
+        {{
+          {} if _nb_import_match | length == 0 else {
+            'dns_name': _nb_import_match[0].dns_name,
+            'status': _nb_import_match[0].status.value,
+            'description': _nb_import_match[0].description,
+          }
+        }}
+
+# --- not found -> POST (create) ---
+- name: "POST (create) -- {{ _nb_import_record.address }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_state_netbox_url }}/api/ipam/ip-addresses/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _nb_import_netbox_token }}"
+      Host: "{{ netbox_import_udm_state_netbox_host_header }}"
+    body_format: json
+    body:
+      address: "{{ _nb_import_record.address }}"
+      dns_name: "{{ _nb_import_desired_fields.dns_name }}"
+      status: "{{ _nb_import_desired_fields.status }}"
+      description: "{{ _nb_import_desired_fields.description }}"
+    validate_certs: true
+    status_code: 201
+    return_content: true
+  register: _nb_import_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: _nb_import_match | length == 0
+
+- name: "Assert POST succeeded -- {{ _nb_import_record.address }}"
+  ansible.builtin.assert:
+    that:
+      - _nb_import_create_result.json.id is defined
+    fail_msg: "NetBox IP-address POST for '{{ _nb_import_record.address }}' returned no id: {{ _nb_import_create_result.json | default(_nb_import_create_result.content | default('(no body)')) }}"
+  when:
+    - _nb_import_match | length == 0
+    - not ansible_check_mode
+
+# --- found + drift -> PATCH (update) ---
+- name: "PATCH (update) -- {{ _nb_import_record.address }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_state_netbox_url }}/api/ipam/ip-addresses/{{ _nb_import_match[0].id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ _nb_import_netbox_token }}"
+      Host: "{{ netbox_import_udm_state_netbox_host_header }}"
+    body_format: json
+    body: "{{ _nb_import_desired_fields }}"
+    validate_certs: true
+    status_code: 200
+    return_content: true
+  register: _nb_import_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _nb_import_match | length > 0
+    - (_nb_import_match[0].dns_name != _nb_import_desired_fields.dns_name)
+      or (_nb_import_match[0].status.value != _nb_import_desired_fields.status)
+      or (_nb_import_match[0].description != _nb_import_desired_fields.description)
+
+- name: "Assert PATCH succeeded -- {{ _nb_import_record.address }}"
+  ansible.builtin.assert:
+    that:
+      - _nb_import_update_result.json.id is defined
+    fail_msg: "NetBox IP-address PATCH for '{{ _nb_import_record.address }}' returned no id: {{ _nb_import_update_result.json | default(_nb_import_update_result.content | default('(no body)')) }}"
+  when:
+    - _nb_import_update_result is not skipped
+    - not ansible_check_mode
