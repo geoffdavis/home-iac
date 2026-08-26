@@ -283,15 +283,24 @@ fallback) — Task 3 used the fallback only because the plugin wasn't
 installed at implementation time, confirmed live via `GET /api/status/`
 returning `"plugins":{}` on 2026-08-24.
 
-**Status: plugin install (Step 1) is in progress** — dispatched
-separately from this plan's own tracking, 2026-08-25. Verify what
-actually landed (plugin version, whether `netbox-bgp` came along with it
-per that same effort) before starting Step 2, don't assume this step's
-prose description above is still accurate to what got installed.
+**Status: plugin install (Step 1) done.** Confirmed live 2026-08-26 via
+`GET /api/status/`: `"plugins": {"netbox_bgp": "0.19.0", "netbox_dns":
+"1.5.11"}`. `netbox-bgp` came along with the same effort but is out of
+scope for this task. The plugin's REST surface is up
+(`/api/plugins/netbox-dns/{zones,records,nameservers,views,
+registrars,contacts,prefixes,...}/`); `zones` count is currently 0 — Step
+2 hasn't happened yet. The read-only token this repo already has
+(`netbox-ansible-inventory-token`) can't show the POST schema for these
+endpoints (DRF only includes it for a token with add permission), so
+Step 3's write-scoped-token question — reuse Task 2's
+`netbox-udm-import-token` (unconfirmed whether its permissions cover
+netbox-dns's object types, since it was originally scoped for
+`ipam.IPAddress`) vs. mint a new one — is still open, along with Step
+2's actual SOA/nameserver values.
 
-- [ ] **Step 1: Install and configure the netbox-dns plugin** on
+- [x] **Step 1: Install and configure the netbox-dns plugin** on
   nas-sdg's NetBox instance (nix-personal, `hosts/nas-sdg/apps/netbox.nix`)
-  — in progress as of 2026-08-25, tracked outside this repo/plan.
+  — done, confirmed live 2026-08-26 (`netbox_dns` 1.5.11).
 - [ ] **Step 2: Create the `home.geoffdavis.com` Zone** (and any other
   zones this fleet's static-DNS records span — check every host's
   current `unifi_network_dns_record_records` for more than one apex,
