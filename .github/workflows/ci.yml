@@ -20,7 +20,7 @@ jobs:
       # terraform_fmt/terraform_validate shell out to a real `tofu` binary
       # (--hook-config=--tf-path=tofu) -- pre-commit's own hook environment
       # doesn't provide one.
-      - uses: opentofu/setup-opentofu@592200bd4b9bbf4772ace78f887668b1aee8f716 # v1.0.5
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1.0.8
         with:
           tofu_wrapper: false
 
