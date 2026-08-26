@@ -89,31 +89,46 @@ unifi_network_dns_record_netbox_validate_certs: true
 # read-only token ansible/netbox_inventory.yml already uses (both are
 # read-only automation reads against NetBox; there is no privilege
 # distinction that would justify a second token) -- but a genuinely
-# DIFFERENT item than netbox_import_udm_state's write-scoped backfill
-# token (design spec Credentials: "two separate tokens, not one" -- this
-# ongoing sync must never hold write access to NetBox).
+# DIFFERENT item than netbox_import_udm_state's / netbox_import_udm_
+# dns_records's write-scoped backfill tokens (design spec Credentials:
+# "two separate tokens, not one" -- this ongoing sync must never hold
+# write access to NetBox). Live-verified 2026-08-26 (this rework, Task
+# 8 Step 5) that this same read-only token DOES have read access to
+# netbox_dns.* object types -- it was never re-scoped for the plugin,
+# but NetBox's default read permission model on this instance turned
+# out not to need it re-scoped either; confirmed with a direct GET
+# against /api/plugins/netbox-dns/records/ before trusting it here.
 unifi_network_dns_record_netbox_token_op_item: "netbox-ansible-inventory-token"
 unifi_network_dns_record_netbox_token_op_vault: "nas-overlay"
 unifi_network_dns_record_netbox_token_op_field: "token"
 
-# ipam.IPAddress list endpoint -- the spec's documented FALLBACK data
-# model (Open Questions: "if [netbox-dns] isn't [installed]... the
-# documented fallback is ipam.IPAddress's built-in dns_name field,
-# A/AAAA only"), not an implementation-time choice still open: confirmed
-# live 2026-08-24 (GET /api/status/ on the running instance:
-# "plugins":{}) that no DNS plugin is installed on this NetBox. Filtered
-# server-side to addresses that actually carry a dns_name -- an address
-# with none has nothing for this sync to do with it.
-unifi_network_dns_record_netbox_records_endpoint: "/api/ipam/ip-addresses/"
+# netbox-dns Record list endpoint (plan Task 8 Step 5) -- supersedes the
+# ipam.IPAddress fallback this role used before the plugin was installed
+# and backfilled (Task 8 Steps 1-3). Record is netbox-dns's first-class
+# DNS-record object (arbitrary type, arbitrary string value), which is
+# what removes the fallback's A/AAAA-only, IPAM-address-only
+# limitations -- see netbox_dns_records_to_udm in
+# filter_plugins/netbox_sync.py for the full transform and its
+# empirically-verified field assumptions. Filtered server-side to the
+# zone resolved by name below (zone id looked up live, not hardcoded,
+# for portability -- see the "Resolve netbox-dns zone id" task in
+# tasks/main.yml).
+unifi_network_dns_record_netbox_records_endpoint: "/api/plugins/netbox-dns/records/"
 # Safety cap on paginated NetBox GETs (limit=200/page below) -- raise if
-# the fleet ever exceeds ~4000 addressed hosts.
+# this zone ever exceeds ~4000 records.
 unifi_network_dns_record_netbox_page_limit: 200
 unifi_network_dns_record_netbox_max_pages: 20
 
-# Only reconcile UDM static-DNS records under this suffix (zone apex or
-# subdomain) -- keeps this role's view of "current UDM state" (set B)
-# scoped to the zone it actually owns, not every static-DNS record on
-# the controller regardless of origin.
+# Dual purpose (source: netbox): (1) the netbox-dns Zone NAME this sync
+# resolves to a zone id live via GET
+# /api/plugins/netbox-dns/zones/?name=<this> (tasks/main.yml, "Resolve
+# netbox-dns zone id") -- deliberately not a hardcoded id, unlike
+# netbox_import_udm_dns_records's defaults, for portability if this
+# role is ever pointed at a second host/zone; and (2) the suffix used to
+# scope "current UDM state" (set B) to records this sync actually owns,
+# not every static-DNS record on the controller regardless of origin.
+# Both meanings describe the same real-world zone, so one var covers
+# both rather than risking two that could drift apart.
 unifi_network_dns_record_managed_zone_suffix: "home.geoffdavis.com"
 
 # external-dns ownership marker this role must never touch (design doc,

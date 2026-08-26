@@ -1,14 +1,18 @@
 ---
-# One page of a paginated GET against NetBox's ipam/ip-addresses list
-# endpoint. include_tasks'd in a loop from main.yml (loop_var unused —
-# the real stop condition is _udm_dns_netbox_next_url going empty, same
-# pattern as unifi_network_ip_reservation's netbox_fetch_page.yml).
+# One page of a paginated GET against netbox-dns's Record list endpoint
+# (zone-filtered — see main.yml's "Initialize NetBox pagination state").
+# include_tasks'd in a loop from main.yml (loop_var unused — the real
+# stop condition is _udm_dns_netbox_next_url going empty, same pattern
+# as unifi_network_ip_reservation's netbox_fetch_page.yml). Same
+# standard DRF {count, next, previous, results} envelope
+# ipam.IPAddress used, confirmed live 2026-08-26 for this endpoint too.
 #
 # Bearer auth + explicit Host header, NOT the v1 "Token <token>" header
 # unifi_network_ip_reservation's copy of this file still uses — this is
 # the currently-correct, live-verified combo (matches
-# netbox_import_udm_state's reconcile_one.yml).
-- name: "Fetch one NetBox IP-address page"
+# netbox_import_udm_state's / netbox_import_udm_dns_records's
+# reconcile_one.yml).
+- name: "Fetch one netbox-dns Record page"
   ansible.builtin.uri:
     url: "{{ _udm_dns_netbox_next_url }}"
     method: GET

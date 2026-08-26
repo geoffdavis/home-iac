@@ -14,13 +14,20 @@ reconcile_one.yml is deliberately left as ordinary Jinja, unchanged in
 shape from the ugreen-nas-compose original (spec: "UDM-side diff/PUT
 logic unchanged").
 
-Scope note: netbox_ipaddress_dns_records_to_udm is the ONLY source
-transform here. An earlier draft of this sync targeted the netbox-dns
-plugin's own record objects -- dropped after confirming live 2026-08-24
-(GET /api/status/ on the running instance: "plugins":{}) that no
-DNS plugin is installed, so the spec's documented fallback
-(ipam.IPAddress's built-in dns_name field) is what this fleet actually
-has to sync from, not an implementation-time choice still open.
+Scope note: netbox_dns_records_to_udm is the source transform here,
+reading the netbox-dns plugin's own Record objects. An earlier version
+of this sync (PR #16 as originally shipped) targeted
+ipam.IPAddress.dns_name instead -- the spec's documented FALLBACK, used
+only because netbox-dns wasn't installed at the time (confirmed live
+2026-08-24: GET /api/status/ returned "plugins":{}). Plan Task 8
+installed the plugin and backfilled real Record data (2026-08-26,
+ansible/roles/netbox_import_udm_dns_records/), which is what this
+transform reads from now -- see Task 8 Step 4 in
+docs/superpowers/plans/2026-08-21-netbox-udm-sync.md. The ipam.IPAddress
+fallback (netbox_ipaddress_dns_records_to_udm) is gone: it was A/AAAA
+only and could never represent nas-sdg's real CNAME, wildcard, and
+split-horizon (non-IPAM) records, which is exactly what this rework
+fixes.
 """
 
 from __future__ import annotations
@@ -120,52 +127,75 @@ def dns_orphans(current_records, desired_records):
     return [r for r in current_records if _dns_id(r) not in desired_ids]
 
 
-# NetBox ipam.IPAddress `status` values (confirmed live 2026-08-24 via
-# OPTIONS on /api/ipam/ip-addresses/: active, reserved, deprecated, dhcp,
-# slaac -- no "inactive"/"disabled" choice exists) that should still sync
-# but as a disabled record, mirroring the netbox-dns-plugin design's
-# active/inactive distinction for a status this data model doesn't have
-# a record-level flag for.
-_DISABLED_STATUSES = {"deprecated"}
+def netbox_dns_records_to_udm(records):
+    """Transform netbox-dns plugin `Record` objects (GET
+    /api/plugins/netbox-dns/records/) into this repo's UDM static-DNS
+    record-dict shape ({record_type, key, value, enabled, state}).
 
+    Supersedes netbox_ipaddress_dns_records_to_udm (the ipam.IPAddress
+    fallback PR #16 originally shipped) now that the netbox-dns plugin
+    is installed and populated with real data (plan Task 8). netbox-dns
+    models DNS records as first-class Record objects -- arbitrary
+    `type`, arbitrary string `value`, not derived from an IP address --
+    which removes the fallback's structural gaps: CNAME, NS, wildcard
+    (`*.`) names, and split-horizon values with no IPAM presence (e.g.
+    the netbird-overlay A records pointing at 100.92.233.103) all
+    transform cleanly here, where the fallback simply could not
+    represent them.
 
-def netbox_ipaddress_dns_records_to_udm(ip_addresses):
-    """Transform NetBox ipam.IPAddress objects into this repo's UDM
-    static-DNS record-dict shape ({record_type, key, value, enabled,
-    state}) -- the spec's documented fallback data model (Open
-    Questions: "if [netbox-dns] isn't [installed]... the documented
-    fallback is ipam.IPAddress's built-in dns_name field, A/AAAA only").
+    Empirical facts this transform relies on -- verified live against
+    the real API (2026-08-26; see
+    ansible/roles/netbox_import_udm_dns_records/README.md's "Empirical
+    API-shape findings" for the backfill role's matching write-path
+    findings, re-confirmed independently here for the read path):
 
-    A/AAAA only, by construction: an IP address can only ever represent
-    itself, so CNAME/NS/MX/TXT records this fleet's UDM also carries
-    (see the role README) have no home in this data model and are
-    simply invisible to this sync, not an error. record_type comes from
-    NetBox's own `family.value` (4 or 6), not guessed from string shape.
-    Addresses with no dns_name are silently skipped -- nothing to sync.
-    status=deprecated maps to enabled=False (synced, but disabled on the
-    UDM) rather than dropped, mirroring how the netbox-dns-plugin design
-    this replaced treated its own "inactive" status.
+    - `fqdn` is a real, server-computed, trailing-dot FQDN (e.g.
+      "*.admin.home.geoffdavis.com.", and "home.geoffdavis.com." for
+      the zone apex, whose relative `name` is the literal string "@") --
+      used directly here (dot stripped) rather than reconstructed from
+      `name` + a zone-suffix string, since the server already handles
+      the apex/wildcard cases correctly and reconstructing it
+      independently would just be duplicating that logic with a second
+      chance to get it wrong.
+    - `value` for a name-shaped record (CNAME/NS/MX) carries a trailing
+      dot (netbox-dns's own FQDN convention); the UDM's static-DNS
+      `value` field does not (see the example in
+      ansible/roles/unifi_network_dns_record/README.md and
+      host_vars/nas-sdg.yml's syslog CNAME) -- stripped here
+      unconditionally. A/AAAA values are IP literals and never carry a
+      trailing dot, so unconditional stripping is safe for every
+      record_type.
+    - `status` serializes as a **plain string** ("active"), NOT the
+      nested {value, label} choice shape ipam.IPAddress's `status` field
+      uses -- the exact bug netbox_import_udm_dns_records's
+      reconcile_one.yml hit (and fixed) on its own idempotent re-run.
+      Compared directly here as a string, no `.value`.
+    - `managed` (bool) marks netbox-dns's own auto-generated
+      zone-bookkeeping records -- the zone's SOA and its apex NS
+      (confirmed live: both carry managed=true on this zone; every
+      real, UDM-sourced record carries managed=false). These have no
+      UDM static-DNS equivalent (the UDM's static-DNS feature has no
+      SOA record type, and the apex NS is bookkeeping-only per plan
+      Task 8 Step 2's zone-creation notes -- "nothing queries it as a
+      real NS") and are unconditionally skipped here.
     """
     out = []
-    for ip_obj in ip_addresses:
-        dns_name = ip_obj.get("dns_name")
-        if not dns_name:
+    for record in records:
+        if record.get("managed"):
             continue
-        address = ip_obj.get("address") or ""
-        bare_ip = address.split("/", 1)[0] if address else None
-        if not bare_ip:
+        fqdn = record.get("fqdn") or ""
+        key = fqdn[:-1] if fqdn.endswith(".") else fqdn
+        if not key:
             continue
-        family = ip_obj.get("family") or {}
-        family_value = family.get("value") if isinstance(family, dict) else family
-        record_type = "AAAA" if family_value == 6 else "A"
-        status = ip_obj.get("status") or {}
-        status_value = status.get("value") if isinstance(status, dict) else status
+        value = record.get("value") or ""
+        if value.endswith("."):
+            value = value[:-1]
         out.append(
             {
-                "record_type": record_type,
-                "key": dns_name,
-                "value": bare_ip,
-                "enabled": status_value not in _DISABLED_STATUSES,
+                "record_type": record.get("type"),
+                "key": key,
+                "value": value,
+                "enabled": record.get("status") == "active",
                 "state": "present",
             }
         )
@@ -179,5 +209,5 @@ class FilterModule:
             "dns_in_zone": dns_in_zone,
             "dns_exclude_owned": dns_exclude_owned,
             "dns_orphans": dns_orphans,
-            "netbox_ipaddress_dns_records_to_udm": netbox_ipaddress_dns_records_to_udm,
+            "netbox_dns_records_to_udm": netbox_dns_records_to_udm,
         }

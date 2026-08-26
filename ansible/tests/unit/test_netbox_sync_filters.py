@@ -14,7 +14,7 @@ from filter_plugins.netbox_sync import (
     dns_external_dns_owned_keys,
     dns_in_zone,
     dns_orphans,
-    netbox_ipaddress_dns_records_to_udm,
+    netbox_dns_records_to_udm,
 )
 
 # ── dns_external_dns_owned_keys ─────────────────────────────────────────
@@ -128,19 +128,31 @@ def test_orphans_empty_when_sets_match():
     assert dns_orphans(current, desired) == []
 
 
-# ── netbox_ipaddress_dns_records_to_udm ─────────────────────────────────
+# ── netbox_dns_records_to_udm ───────────────────────────────────────────
+#
+# Fixtures below mirror the real, live-verified shape of netbox-dns
+# Record objects (GET /api/plugins/netbox-dns/records/, confirmed
+# 2026-08-26 against nas-sdg's real home.geoffdavis.com zone) — not a
+# guessed schema. In particular: `status` is a plain string (not the
+# nested {value, label} shape ipam.IPAddress used), `fqdn` is a real,
+# server-computed, trailing-dot field, and `managed` is present and
+# boolean on every record (true only for the zone's own auto-generated
+# SOA/apex-NS bookkeeping).
 
 
-def test_transform_ipv4_record():
-    ip_addresses = [
+def test_transform_plain_a_record():
+    records = [
         {
-            "address": "172.29.50.20/24",
-            "dns_name": "media.home.geoffdavis.com",
-            "family": {"value": 4},
-            "status": {"value": "active"},
+            "type": "A",
+            "name": "media",
+            "fqdn": "media.home.geoffdavis.com.",
+            "value": "172.29.50.20",
+            "ttl": None,
+            "status": "active",
+            "managed": False,
         }
     ]
-    result = netbox_ipaddress_dns_records_to_udm(ip_addresses)
+    result = netbox_dns_records_to_udm(records)
     assert result == [
         {
             "record_type": "A",
@@ -152,50 +164,125 @@ def test_transform_ipv4_record():
     ]
 
 
-def test_transform_ipv6_record_uses_aaaa():
-    ip_addresses = [
+def test_transform_cname_record_strips_trailing_dot_from_value():
+    records = [
         {
-            "address": "fd47:25e1:2f96:50::20/64",
-            "dns_name": "media6.home.geoffdavis.com",
-            "family": {"value": 6},
-            "status": {"value": "active"},
+            "type": "CNAME",
+            "name": "syslog",
+            "fqdn": "syslog.home.geoffdavis.com.",
+            "value": "nas-sdg.iot.home.geoffdavis.com.",
+            "ttl": None,
+            "status": "active",
+            "managed": False,
         }
     ]
-    result = netbox_ipaddress_dns_records_to_udm(ip_addresses)
-    assert result[0]["record_type"] == "AAAA"
-    assert result[0]["value"] == "fd47:25e1:2f96:50::20"
-
-
-def test_transform_deprecated_status_is_disabled_not_dropped():
-    ip_addresses = [
+    result = netbox_dns_records_to_udm(records)
+    assert result == [
         {
-            "address": "172.29.50.99/24",
-            "dns_name": "old.home.geoffdavis.com",
-            "family": {"value": 4},
-            "status": {"value": "deprecated"},
+            "record_type": "CNAME",
+            "key": "syslog.home.geoffdavis.com",
+            "value": "nas-sdg.iot.home.geoffdavis.com",
+            "enabled": True,
+            "state": "present",
         }
     ]
-    result = netbox_ipaddress_dns_records_to_udm(ip_addresses)
+
+
+def test_transform_wildcard_record_uses_fqdn_directly():
+    """Wildcards use the literal '*' in the relative name; `fqdn` already
+    carries it through correctly server-side (*.nas.home.geoffdavis.com.)
+    — this transform trusts that rather than re-deriving it from `name`
+    + a zone-suffix string."""
+    records = [
+        {
+            "type": "A",
+            "name": "*.nas",
+            "fqdn": "*.nas.home.geoffdavis.com.",
+            "value": "100.92.233.103",
+            "ttl": 3600,
+            "status": "active",
+            "managed": False,
+        }
+    ]
+    result = netbox_dns_records_to_udm(records)
+    assert result[0]["key"] == "*.nas.home.geoffdavis.com"
+    assert result[0]["value"] == "100.92.233.103"
+
+
+def test_transform_status_is_plain_string_not_nested_choice():
+    """The exact bug netbox_import_udm_dns_records's reconcile_one.yml
+    hit live: netbox-dns Record.status serializes as a plain string
+    ("active"), unlike ipam.IPAddress.status's nested {value, label}
+    shape. A record whose status is anything other than the literal
+    string "active" (e.g. "inactive") must map to enabled=False without
+    crashing on a `.value` attribute access that doesn't exist here."""
+    records = [
+        {
+            "type": "A",
+            "name": "old",
+            "fqdn": "old.home.geoffdavis.com.",
+            "value": "172.29.50.99",
+            "ttl": None,
+            "status": "inactive",
+            "managed": False,
+        }
+    ]
+    result = netbox_dns_records_to_udm(records)
     assert len(result) == 1
     assert result[0]["enabled"] is False
 
 
-def test_transform_skips_addresses_with_no_dns_name():
-    ip_addresses = [
-        {"address": "172.29.50.1/24", "dns_name": "", "family": {"value": 4}, "status": {"value": "active"}},
-        {"address": "172.29.50.2/24", "dns_name": None, "family": {"value": 4}, "status": {"value": "active"}},
-    ]
-    assert netbox_ipaddress_dns_records_to_udm(ip_addresses) == []
-
-
-def test_transform_strips_cidr_mask():
-    ip_addresses = [
+def test_transform_skips_managed_records():
+    """managed=true marks netbox-dns's own auto-generated zone
+    bookkeeping (SOA, apex NS) — these have no UDM static-DNS
+    equivalent and must never be proposed as a create."""
+    records = [
         {
-            "address": "172.29.10.31/24",
-            "dns_name": "pacificbeach.mgmt.home.geoffdavis.com",
-            "family": {"value": 4},
-            "status": {"value": "active"},
+            "type": "SOA",
+            "name": "@",
+            "fqdn": "home.geoffdavis.com.",
+            "value": "unifi.home.geoffdavis.com. hostmaster.geoffdavis.com. 1 172800 7200 2419200 3600",
+            "ttl": 3600,
+            "status": "active",
+            "managed": True,
+        },
+        {
+            "type": "NS",
+            "name": "@",
+            "fqdn": "home.geoffdavis.com.",
+            "value": "unifi.home.geoffdavis.com.",
+            "ttl": None,
+            "status": "active",
+            "managed": True,
+        },
+        {
+            "type": "A",
+            "name": "media",
+            "fqdn": "media.home.geoffdavis.com.",
+            "value": "172.29.50.20",
+            "ttl": None,
+            "status": "active",
+            "managed": False,
+        },
+    ]
+    result = netbox_dns_records_to_udm(records)
+    assert [r["key"] for r in result] == ["media.home.geoffdavis.com"]
+
+
+def test_transform_apex_record_fqdn_has_no_leading_at():
+    """The zone apex's relative `name` is the literal "@", but `fqdn`
+    already resolves that to the real apex name server-side — this
+    transform must use fqdn's value, not leak the "@" through."""
+    records = [
+        {
+            "type": "A",
+            "name": "@",
+            "fqdn": "home.geoffdavis.com.",
+            "value": "172.29.50.1",
+            "ttl": None,
+            "status": "active",
+            "managed": False,
         }
     ]
-    result = netbox_ipaddress_dns_records_to_udm(ip_addresses)
-    assert result[0]["value"] == "172.29.10.31"
+    result = netbox_dns_records_to_udm(records)
+    assert result[0]["key"] == "home.geoffdavis.com"

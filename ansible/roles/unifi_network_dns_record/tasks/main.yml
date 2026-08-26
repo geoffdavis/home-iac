@@ -13,12 +13,13 @@
 #        - source=static: unifi_network_dns_record_records, unchanged —
 #          same one-directional walk this role has always used, absent
 #          entries are explicit deletes
-#        - source=netbox: fetch ipam.IPAddress from NetBox, transform,
-#          then a full symmetric set comparison against current UDM
-#          state (set B) — both zone-filtered and external-dns-owned
-#          names excluded from each side first. Anything in set B but
-#          not set A is an orphan: logged loudly, never deleted (design
-#          doc: "Sync direction and idempotency" + "Ownership filter").
+#        - source=netbox: fetch netbox-dns Record objects (the target
+#          zone resolved by name to an id first), transform, then a
+#          full symmetric set comparison against current UDM state (set
+#          B) — both zone-filtered and external-dns-owned names
+#          excluded from each side first. Anything in set B but not set
+#          A is an orphan: logged loudly, never deleted (design doc:
+#          "Sync direction and idempotency" + "Ownership filter").
 #   6. For each record in the desired-record list:
 #        - state=present: POST (create) or PUT (update on drift)
 #        - state=absent:  DELETE if found, no-op if already absent
@@ -137,14 +138,15 @@
         _udm_dns_desired_records: "{{ unifi_network_dns_record_records }}"
       when: unifi_network_dns_record_source == 'static'
 
-    # source=netbox: fetch ipam.IPAddress from NetBox, transform to the
-    # UDM record shape, then a full symmetric set comparison against
-    # current UDM state — NOT a one-directional walk over the fetched
-    # list, which would silently miss "in UDM, not in NetBox" orphans
-    # (design doc: "Sync direction and idempotency"). Both sides are
-    # zone-filtered and external-dns-owned names excluded before the
-    # comparison, so this sync can never touch a Kubernetes-owned name
-    # even on a key+type collision (design doc: "Ownership filter").
+    # source=netbox: fetch netbox-dns Record objects from NetBox,
+    # transform to the UDM record shape, then a full symmetric set
+    # comparison against current UDM state — NOT a one-directional walk
+    # over the fetched list, which would silently miss "in UDM, not in
+    # NetBox" orphans (design doc: "Sync direction and idempotency").
+    # Both sides are zone-filtered and external-dns-owned names excluded
+    # before the comparison, so this sync can never touch a
+    # Kubernetes-owned name even on a key+type collision (design doc:
+    # "Ownership filter").
     - name: "Fetch NetBox API token from 1Password"
       ansible.builtin.set_fact:
         _udm_dns_netbox_token: >-
@@ -157,17 +159,61 @@
       become: false
       when: unifi_network_dns_record_source == 'netbox'
 
+    # Resolve the netbox-dns zone by NAME rather than hardcoding its id
+    # (unlike netbox_import_udm_dns_records's defaults, which hardcode
+    # zone id 1 for the one-shot backfill) — this is the ongoing sync,
+    # so a portable-by-name lookup here means pointing a second host at
+    # a second zone never requires hunting up its numeric id by hand.
+    # Live-verified 2026-08-26: GET .../zones/?name=<name> filters
+    # correctly and returns exactly one match for a real zone name.
+    - name: "Resolve netbox-dns zone id by name"
+      ansible.builtin.uri:
+        url: >-
+          {{ unifi_network_dns_record_netbox_url }}/api/plugins/netbox-dns/zones/?name={{ unifi_network_dns_record_managed_zone_suffix | urlencode }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _udm_dns_netbox_token }}"
+          Host: "{{ unifi_network_dns_record_netbox_host_header }}"
+        validate_certs: "{{ unifi_network_dns_record_netbox_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_dns_netbox_zone_lookup
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Assert exactly one netbox-dns zone matched"
+      ansible.builtin.assert:
+        that:
+          - _udm_dns_netbox_zone_lookup.json.count == 1
+        fail_msg: >-
+          Expected exactly one netbox-dns Zone named
+          '{{ unifi_network_dns_record_managed_zone_suffix }}', got
+          {{ _udm_dns_netbox_zone_lookup.json.count | default('?') }}.
+          Check that the zone exists (plan Task 8 Step 2) and that
+          unifi_network_dns_record_managed_zone_suffix matches its name
+          exactly.
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Capture resolved netbox-dns zone id"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_zone_id: "{{ _udm_dns_netbox_zone_lookup.json.results[0].id }}"
+      when: unifi_network_dns_record_source == 'netbox'
+
     - name: "Initialize NetBox pagination state"
       ansible.builtin.set_fact:
         _udm_dns_netbox_results: []
         _udm_dns_netbox_next_url: >-
           {{ unifi_network_dns_record_netbox_url
              ~ unifi_network_dns_record_netbox_records_endpoint
-             ~ '?has_dns_name=true&limit='
+             ~ '?zone_id=' ~ _udm_dns_netbox_zone_id
+             ~ '&limit='
              ~ unifi_network_dns_record_netbox_page_limit }}
       when: unifi_network_dns_record_source == 'netbox'
 
-    - name: "Fetch all NetBox IP-address pages"
+    - name: "Fetch all NetBox DNS-record pages"
       ansible.builtin.include_tasks: netbox_fetch_page.yml
       loop: "{{ range(0, unifi_network_dns_record_netbox_max_pages) | list }}"
       loop_control:
@@ -180,7 +226,7 @@
         that:
           - _udm_dns_netbox_next_url | length == 0
         fail_msg: >-
-          NetBox ip-addresses pagination hit
+          NetBox records pagination hit
           unifi_network_dns_record_netbox_max_pages
           ({{ unifi_network_dns_record_netbox_max_pages }}) without
           exhausting results — raise the cap.
@@ -196,7 +242,7 @@
     - name: "Compute set A (NetBox-desired, zone-filtered, owned-excluded)"
       ansible.builtin.set_fact:
         _udm_dns_desired_records: >-
-          {{ (_udm_dns_netbox_results | netbox_ipaddress_dns_records_to_udm
+          {{ (_udm_dns_netbox_results | netbox_dns_records_to_udm
               | dns_in_zone(unifi_network_dns_record_managed_zone_suffix))
              | dns_exclude_owned(_udm_dns_owned_keys) }}
       when: unifi_network_dns_record_source == 'netbox'
