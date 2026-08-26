@@ -1,0 +1,41 @@
+---
+# One page of a paginated GET against NetBox's ipam/ip-addresses list
+# endpoint. include_tasks'd in a loop from main.yml (loop_var unused —
+# the real stop condition is _udm_dns_netbox_next_url going empty, same
+# pattern as unifi_network_ip_reservation's netbox_fetch_page.yml).
+#
+# Bearer auth + explicit Host header, NOT the v1 "Token <token>" header
+# unifi_network_ip_reservation's copy of this file still uses — this is
+# the currently-correct, live-verified combo (matches
+# netbox_import_udm_state's reconcile_one.yml).
+- name: "Fetch one NetBox IP-address page"
+  ansible.builtin.uri:
+    url: "{{ _udm_dns_netbox_next_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _udm_dns_netbox_token }}"
+      Host: "{{ unifi_network_dns_record_netbox_host_header }}"
+      Accept: "application/json"
+    validate_certs: "{{ unifi_network_dns_record_netbox_validate_certs }}"
+    status_code: 200
+    return_content: true
+  register: _udm_dns_netbox_page
+  delegate_to: localhost
+  become: false
+  no_log: true
+  # Same rationale as main.yml's UDM GET: --check skips a plain GET
+  # unless forced, and downstream tasks need real data to diff against.
+  check_mode: false
+  changed_when: false
+  when: _udm_dns_netbox_next_url | length > 0
+
+- name: "Accumulate results + advance pagination cursor"
+  ansible.builtin.set_fact:
+    _udm_dns_netbox_results: "{{ _udm_dns_netbox_results + _udm_dns_netbox_page.json.results }}"
+    # boolean=true — NetBox's last page returns "next": null (present,
+    # not absent), and default() only substitutes on Undefined unless
+    # told to also treat None/'' as missing. Without it, next_url
+    # resolves to native Python None instead of '', and the next
+    # iteration's `| length > 0` crashes on it. Live finding 2026-08-25.
+    _udm_dns_netbox_next_url: "{{ _udm_dns_netbox_page.json.next | default('', true) }}"
+  when: _udm_dns_netbox_next_url | length > 0

@@ -47,6 +47,51 @@ name/description field, and one FQDN may carry records of several
 types). A matched record is compared on `value` + `enabled`; a PUT only
 fires on drift.
 
+## Sync model
+
+The role has two `unifi_network_dns_record_source` modes:
+
+- **`static`** (default) — desired records come verbatim from
+  `unifi_network_dns_record_records`, exactly as before this role had
+  any NetBox awareness. One-directional: only the listed records are
+  touched; `state: absent` entries are the explicit-delete mechanism.
+  This is the safe, unchanged default — flipping a host to `netbox`
+  mode is a deliberate per-host `host_vars` decision, not something
+  this role defaults into.
+
+- **`netbox`** — desired records (set A) come from NetBox's
+  `ipam.IPAddress` objects instead. Comparison against the UDM's
+  current state (set B) is a **full symmetric set diff**, not a
+  one-directional walk over set A — a one-directional walk would
+  silently miss "in UDM, not in NetBox" records entirely. Both sets are
+  zone-filtered (`unifi_network_dns_record_managed_zone_suffix`) and
+  have `external-dns`-owned names excluded
+  (`unifi_network_dns_record_external_dns_heritage_marker`) *before*
+  the comparison, so this sync can never propose creating, updating, or
+  orphan-reporting a Kubernetes-owned name — even on a key+type
+  collision. Anything in set B but not set A is logged loudly as an
+  orphan and left alone; **this role never deletes a record it
+  discovers is no longer in NetBox.**
+
+### Why `ipam.IPAddress`, not a DNS-record object
+
+The design called for sourcing from NetBox's `netbox-dns` plugin if
+installed. Confirmed live 2026-08-24 (`GET /api/status/` →
+`"plugins":{}`) that this NetBox instance doesn't have it installed —
+so this role uses the spec's documented fallback instead:
+`ipam.IPAddress`'s built-in `dns_name` field. Consequences of that
+fallback:
+
+- **A/AAAA only.** An IP address can only ever represent itself —
+  CNAME/MX/TXT records (like the syslog CNAME in the static example
+  below) have no home in this data model and are simply invisible to
+  `netbox` mode. They still work fine under `static` mode.
+- `record_type` comes from NetBox's own `family.value` (`4`/`6`), not
+  guessed from the address's string shape.
+- Addresses with no `dns_name` set are skipped — nothing to sync.
+- `status: deprecated` maps to `enabled: false` (synced, but disabled
+  on the UDM) rather than dropped from the sync.
+
 ## Variables
 
 | Variable | Default | Purpose |
@@ -57,7 +102,18 @@ fires on drift.
 | `unifi_network_dns_record_site` | `default` | UniFi site identifier |
 | `unifi_network_dns_record_creds_op_item` | `UniFi UDM Pro (ansible)` | 1P item name |
 | `unifi_network_dns_record_creds_op_vault` | `Automation` | 1P vault name |
-| `unifi_network_dns_record_records` | `[]` | List of record dicts (see below) |
+| `unifi_network_dns_record_source` | `static` | `static` or `netbox` — see "Sync model" |
+| `unifi_network_dns_record_records` | `[]` | List of record dicts (source: `static`, see below) |
+| `unifi_network_dns_record_netbox_url` | `http://172.29.10.20:8080` | NetBox base URL (source: `netbox`) |
+| `unifi_network_dns_record_netbox_host_header` | `netbox.mgmt.home.geoffdavis.com` | Explicit `Host` header (reached by IP, not name) |
+| `unifi_network_dns_record_netbox_validate_certs` | `true` | NetBox cert validation |
+| `unifi_network_dns_record_netbox_token_op_item` | `netbox-ansible-inventory-token` | 1P item — reuses the read-only inventory token |
+| `unifi_network_dns_record_netbox_token_op_vault` | `nas-overlay` | 1P vault name |
+| `unifi_network_dns_record_netbox_records_endpoint` | `/api/ipam/ip-addresses/` | NetBox list endpoint |
+| `unifi_network_dns_record_netbox_page_limit` | `200` | Page size for pagination |
+| `unifi_network_dns_record_netbox_max_pages` | `20` | Safety cap on pagination |
+| `unifi_network_dns_record_managed_zone_suffix` | `home.geoffdavis.com` | Zone this sync owns (source: `netbox`) |
+| `unifi_network_dns_record_external_dns_heritage_marker` | `heritage=external-dns` | TXT-record substring marking a name as Kubernetes-owned |
 
 ### Record dict fields
 
@@ -69,7 +125,22 @@ fires on drift.
 | `enabled` | no | `true` | Record active |
 | `state` | no | `present` | `present` or `absent` |
 
-## Example — central syslog CNAME
+## Example — NetBox-sourced sync
+
+In `host_vars/nas-sdg.yml`:
+
+```yaml
+unifi_network_dns_record_enabled: true
+unifi_network_dns_record_source: netbox
+```
+
+Every run: fetch `ipam.IPAddress` objects with a `dns_name` set from
+NetBox, transform to A/AAAA records, diff against the UDM's current
+`home.geoffdavis.com` records (excluding anything `external-dns` owns),
+reconcile drift, and log — but never delete — anything left on the UDM
+that NetBox no longer lists.
+
+## Example — static CNAME
 
 In `host_vars/nas-sdg.yml`:
 

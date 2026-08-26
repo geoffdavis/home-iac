@@ -9,6 +9,13 @@
 # under the *v2* API (/proxy/network/v2/api/site/<site>/static-dns),
 # whose list endpoint returns a bare JSON array instead of the v1
 # {data: [...]} envelope.
+#
+# Task 3 of docs/superpowers/plans/2026-08-21-netbox-udm-sync.md: the
+# desired-record list (set A) can now come from NetBox instead of the
+# static unifi_network_dns_record_records list below, via
+# unifi_network_dns_record_source. The comparison against the UDM's
+# current state (set B) is a full symmetric set diff, not a
+# one-directional walk -- see README "Sync model".
 
 # Opt-in per host. Default false so hosts with no DNS-record
 # requirements inherit a no-op.
@@ -31,7 +38,23 @@ unifi_network_dns_record_creds_op_vault: "Automation"
 unifi_network_dns_record_creds_username_field: "username"
 unifi_network_dns_record_creds_password_field: "password"
 
-# List of static DNS records to reconcile. Each entry:
+# --- Desired-state source ---------------------------------------------
+#
+# "static" (default): use unifi_network_dns_record_records verbatim,
+# exactly as before Task 3. "netbox": query NetBox's ipam.IPAddress
+# objects for the record list every run instead.
+#
+# Defaults to "static" deliberately -- this is a live, currently-running
+# role (nas-sdg's host_vars sets a real unifi_network_dns_record_records
+# list today), and Task 3 Step 7 (Gate G3: --check against a backfilled
+# NetBox, zero diffs) is the thing that earns the right to flip a given
+# host's host_vars to source: netbox, not a change to this default.
+# Retired by plan Task 6 once every host that needs this role has made
+# that switch.
+unifi_network_dns_record_source: "static"
+
+# List of static DNS records to reconcile (source: static only). Each
+# entry:
 #
 #   record_type: string — "A" | "AAAA" | "CNAME" | "MX" | "TXT" | ...
 #   key:         string — the record's FQDN (idempotency key, with
@@ -49,3 +72,58 @@ unifi_network_dns_record_creds_password_field: "password"
 #       key: syslog.home.geoffdavis.com
 #       value: nas-sdg.iot.home.geoffdavis.com
 unifi_network_dns_record_records: []
+
+# --- NetBox connection (source: netbox only) --------------------------
+# Same host as ../../../hosts/nas-sdg/apps/netbox.nix (nix-personal).
+# Reached over VLAN 10 by IP + explicit Host header, not the
+# netbox.mgmt.home.geoffdavis.com name -- matches netbox_import_udm_state
+# and netbox_inventory.yml's own reasoning: this role has no business
+# depending on UDM DNS resolving correctly on the machine running
+# ansible-playbook, and ALLOWED_HOSTS on the container rejects a Host
+# header it doesn't recognize either way.
+unifi_network_dns_record_netbox_url: "http://172.29.10.20:8080"
+unifi_network_dns_record_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
+unifi_network_dns_record_netbox_validate_certs: true
+
+# Read-only NetBox API token, 1Password-sourced. Deliberately the SAME
+# read-only token ansible/netbox_inventory.yml already uses (both are
+# read-only automation reads against NetBox; there is no privilege
+# distinction that would justify a second token) -- but a genuinely
+# DIFFERENT item than netbox_import_udm_state's write-scoped backfill
+# token (design spec Credentials: "two separate tokens, not one" -- this
+# ongoing sync must never hold write access to NetBox).
+unifi_network_dns_record_netbox_token_op_item: "netbox-ansible-inventory-token"
+unifi_network_dns_record_netbox_token_op_vault: "nas-overlay"
+unifi_network_dns_record_netbox_token_op_field: "token"
+
+# ipam.IPAddress list endpoint -- the spec's documented FALLBACK data
+# model (Open Questions: "if [netbox-dns] isn't [installed]... the
+# documented fallback is ipam.IPAddress's built-in dns_name field,
+# A/AAAA only"), not an implementation-time choice still open: confirmed
+# live 2026-08-24 (GET /api/status/ on the running instance:
+# "plugins":{}) that no DNS plugin is installed on this NetBox. Filtered
+# server-side to addresses that actually carry a dns_name -- an address
+# with none has nothing for this sync to do with it.
+unifi_network_dns_record_netbox_records_endpoint: "/api/ipam/ip-addresses/"
+# Safety cap on paginated NetBox GETs (limit=200/page below) -- raise if
+# the fleet ever exceeds ~4000 addressed hosts.
+unifi_network_dns_record_netbox_page_limit: 200
+unifi_network_dns_record_netbox_max_pages: 20
+
+# Only reconcile UDM static-DNS records under this suffix (zone apex or
+# subdomain) -- keeps this role's view of "current UDM state" (set B)
+# scoped to the zone it actually owns, not every static-DNS record on
+# the controller regardless of origin.
+unifi_network_dns_record_managed_zone_suffix: "home.geoffdavis.com"
+
+# external-dns ownership marker this role must never touch (design doc,
+# "Ownership filter, and where it actually has to live"). Any UDM TXT
+# record whose value contains this substring marks its sibling name as
+# Kubernetes-owned; such names are excluded from both set A and set B
+# before comparison, so this sync can never propose creating, updating,
+# OR reporting-as-orphan a name external-dns manages, even if NetBox
+# happens to hold a conflicting record with the same key+type. Confirmed
+# live 2026-08-24 against the real UDM static-DNS list (Task 2 backfill
+# investigation): excludes website-dev.k8s.home.geoffdavis.com,
+# website-prod.k8s.home.geoffdavis.com, hubble.k8s.home.geoffdavis.com.
+unifi_network_dns_record_external_dns_heritage_marker: "heritage=external-dns"

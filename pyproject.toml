@@ -1,0 +1,12 @@
+[project]
+name = "home-iac-dev"
+version = "0.0.0"
+description = "Development tooling dependencies for the home-iac repo (OpenTofu + Ansible)."
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = [
+  "ansible-core",
+  "pytest",
+  "pyyaml",
+]
