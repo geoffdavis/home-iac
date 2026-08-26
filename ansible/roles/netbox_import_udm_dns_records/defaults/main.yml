@@ -1,0 +1,91 @@
+---
+# netbox_import_udm_dns_records: ONE-SHOT backfill of the UDM's live
+# static-DNS list into netbox-dns Zone/Record objects (plan Task 8 Step 3,
+# docs/superpowers/plans/2026-08-21-netbox-udm-sync.md). Unlike Task 2's
+# netbox_import_udm_state (ipam.IPAddress, A/AAAA-only), this role targets
+# the netbox-dns plugin's own Record model, which represents every record
+# type netbox-dns's REST surface accepts (CNAME, wildcards, split-horizon
+# targets with no IPAM presence at all) -- see the role README's "Why a
+# second backfill role" section.
+
+# --- NetBox connection -------------------------------------------------
+# Same host + Host-header rationale as netbox_import_udm_state's defaults
+# (ansible/roles/netbox_import_udm_state/defaults/main.yml) -- reached over
+# VLAN 10 by IP, with an explicit Host header, because netbox.nix's
+# ALLOWED_HOSTS only recognizes "netbox.mgmt.home.geoffdavis.com 127.0.0.1"
+# and 400s a bare-IP Host header.
+netbox_import_udm_dns_records_netbox_url: "http://172.29.10.20:8080"
+netbox_import_udm_dns_records_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
+
+# --- netbox-dns Zone/View this backfill writes into ---------------------
+# Created live 2026-08-26 (Task 8 Step 2): Zone `home.geoffdavis.com` (id
+# 1), View `Internal` (id 2), NameServer `unifi.home.geoffdavis.com.` (id
+# 1). This role does not create the Zone/View -- it only writes Records
+# into the zone id below. netbox_import_udm_dns_records_zone_name is used
+# to strip the zone suffix off each UDM key to get netbox-dns's relative
+# `name` (confirmed empirically 2026-08-26 -- see README "name vs fqdn").
+netbox_import_udm_dns_records_netbox_zone_id: 1
+netbox_import_udm_dns_records_netbox_zone_name: "home.geoffdavis.com"
+
+# 1Password lookup for the write-scoped NetBox token -- the dedicated
+# `ansible` service account (NetBox user id 4) created for exactly this
+# purpose (Task 8 status note): view/add/change only on
+# netbox_dns.{view,nameserver,zone,record}, no delete. Deliberately
+# separate from both netbox_import_udm_state's write-scoped
+# netbox-udm-import-token (Task 2, scoped to ipam.IPAddress, unconfirmed
+# whether it even covers netbox_dns object types) and Task 3's read-only
+# ongoing-sync token -- same separation-of-scope rule the design doc
+# establishes throughout.
+netbox_import_udm_dns_records_netbox_token_op_item: "netbox-ansible-service-account"
+netbox_import_udm_dns_records_netbox_token_op_vault: "nas-overlay"
+netbox_import_udm_dns_records_netbox_token_op_field: "credential"
+
+# --- UDM connection ------------------------------------------------------
+# Identical to netbox_import_udm_state's / unifi_network_dns_record's
+# defaults -- same controller, same site, same credential.
+netbox_import_udm_dns_records_udm_controller_url: "https://172.29.50.1"
+netbox_import_udm_dns_records_udm_validate_certs: false
+netbox_import_udm_dns_records_udm_site: "default"
+netbox_import_udm_dns_records_udm_creds_op_item: "UniFi UDM Pro (ansible)"
+netbox_import_udm_dns_records_udm_creds_op_vault: "Automation"
+netbox_import_udm_dns_records_udm_creds_username_field: "username"
+netbox_import_udm_dns_records_udm_creds_password_field: "password"
+
+# --- external-dns ownership filter ---------------------------------------
+# Same rationale and same live-confirmed prefix as
+# netbox_import_udm_state_externaldns_txt_prefix (Task 2's defaults) --
+# pi-talos-home-ops's external-dns writes ownership TXT records shaped
+# "_externaldns.a-<name>" -> "...heritage=external-dns...". Any record
+# (A/AAAA target OR the TXT marker itself) tied to that ownership is
+# Kubernetes-managed, not static desired state, and must not be imported
+# into netbox-dns -- Task 3's future reconciler would otherwise risk
+# overwriting a live Kubernetes-owned DNS record the moment NetBox held a
+# same-key+type object. Confirmed live 2026-08-26: this excludes
+# website-dev.k8s, website-prod.k8s and hubble.k8s (all -> 172.29.55.0,
+# the Cilium LB pool's network address, not a real host -- same finding
+# Task 2's README already documents) plus their three
+# _externaldns.a-*.TXT marker records.
+netbox_import_udm_dns_records_externaldns_txt_prefix: "_externaldns.a-"
+
+# --- Explicit, documented skips -------------------------------------------
+# Two records on the UDM's static-DNS list deliberately get NO netbox-dns
+# Record, and are neither silently dropped nor swept up by the
+# external-dns filter above:
+#
+#   - ipa.geoffdavis.com (NS, value 172.29.50.21): a genuinely different
+#     zone from home.geoffdavis.com, not a subdomain of it -- FreeIPA owns
+#     its own DNS for that zone (see playbooks/freeipa-dns-records.yml).
+#     Its value is also an IP address, an odd shape for an NS record's
+#     target regardless. Task 8 Step 2's plan-doc note flagged this
+#     explicitly rather than let it fall into whatever
+#     home.geoffdavis.com-shaped bucket the backfill defaulted to.
+#   - pottedpork-hassio.duckdns.org (A, value 172.29.50.157): a different
+#     domain entirely (duckdns.org, not home.geoffdavis.com) -- pinned
+#     locally so LAN clients don't hairpin out to the public DuckDNS
+#     record, but it has no home in a home.geoffdavis.com Zone.
+#
+# Both are excluded by exact key match below; grep this file for "SKIP" to
+# find where.
+netbox_import_udm_dns_records_explicit_skip_keys:
+  - "ipa.geoffdavis.com"
+  - "pottedpork-hassio.duckdns.org"
