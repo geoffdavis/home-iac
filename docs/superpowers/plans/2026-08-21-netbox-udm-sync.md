@@ -295,16 +295,47 @@ endpoints (DRF only includes it for a token with add permission), so
 Step 3's write-scoped-token question — reuse Task 2's
 `netbox-udm-import-token` (unconfirmed whether its permissions cover
 netbox-dns's object types, since it was originally scoped for
-`ipam.IPAddress`) vs. mint a new one — is still open, along with Step
-2's actual SOA/nameserver values.
+`ipam.IPAddress`) vs. mint a new one — resolved: neither
+`netbox-udm-import-token` nor `netbox-ansible-inventory-token` is the
+write credential in use. A separate token, 1Password
+`op://nas-overlay/netbox-geoff-token/token`, has full write access and
+is what Step 2 actually used. **Task 3's Step 3 write-token-separation
+convention (see that task's Files note) is not honored here** — this is
+a shared/admin-scoped credential, not a role-specific write-scoped one
+minted for this backfill. Worth revisiting before Step 3's backfill role
+hardcodes it as the ongoing convention.
 
 - [x] **Step 1: Install and configure the netbox-dns plugin** on
   nas-sdg's NetBox instance (nix-personal, `hosts/nas-sdg/apps/netbox.nix`)
   — done, confirmed live 2026-08-26 (`netbox_dns` 1.5.11).
-- [ ] **Step 2: Create the `home.geoffdavis.com` Zone** (and any other
-  zones this fleet's static-DNS records span — check every host's
-  current `unifi_network_dns_record_records` for more than one apex,
-  not just nas-sdg's).
+- [x] **Step 2: Create the `home.geoffdavis.com` Zone.** Done
+  2026-08-26 via `op://nas-overlay/netbox-geoff-token/token`:
+  - View `Internal` (id 2) — the LAN-only split-horizon perspective;
+    the public `home.geoffdavis.com` apex is a single CNAME to dynamic
+    DNS at the registrar, deliberately not modeled here (out of scope
+    for this sync, which only ever writes to the UDM).
+  - NameServer `unifi.home.geoffdavis.com.` (id 1) — bookkeeping only;
+    nothing queries it as a real NS, since the UDM (not netbox-dns)
+    answers LAN queries.
+  - Zone `home.geoffdavis.com` (id 1), `view=Internal`, `status=active`,
+    `soa_serial_auto=true`, conventional SOA timers
+    (refresh/retry/expire/minimum = 172800/7200/2419200/3600 — no
+    fleet-wide defaults exist, confirmed via
+    `hosts/nas-sdg/apps/netbox-plugins.py`'s empty `PLUGINS_CONFIG`).
+  - Checked: nas-sdg is the *only* host with `unifi_network_dns_record_records`
+    set (`grep -rl unifi_network_dns_record_records ansible/host_vars/`),
+    so no other host contributes a second apex. One nuance within
+    nas-sdg's own list, though: the `ipa.geoffdavis.com` NS record is a
+    genuinely different zone from `home.geoffdavis.com`, not a
+    subdomain of it — and its value (`172.29.50.21`, an IP) is an odd
+    shape for an NS record's target regardless. Likely a legacy
+    delegation pointer to the FreeIPA VM (see the role README's
+    `playbooks/freeipa-dns-records.yml` cross-reference) rather than
+    something this sync should model as a `home.geoffdavis.com` A/CNAME
+    peer. Step 3 needs to explicitly decide: skip it (FreeIPA's own DNS
+    already owns that zone) or give it a real second Zone — don't let it
+    silently fall into whatever `home.geoffdavis.com`-shaped bucket the
+    backfill script defaults to.
 - [ ] **Step 3: One-shot backfill role**
   (`netbox_import_udm_dns_records`, or extend Task 2's
   `netbox_import_udm_state`) — same shape as Task 2: GET the UDM's
