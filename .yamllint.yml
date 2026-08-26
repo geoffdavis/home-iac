@@ -1,0 +1,20 @@
+---
+# .yamllint.yml — style linting for YAML outside ansible/ (ansible-lint
+# already owns YAML style there, via its own embedded yamllint rules;
+# running this too on the same tree would just produce duplicate/
+# conflicting findings). Deliberately loose, matching .ansible-lint's own
+# "not enforcing everything on day one" stance for this repo.
+extends: default
+
+ignore: |
+  ansible/
+  .terraform/
+  environments/*/.terraform/
+
+rules:
+  line-length: disable # Taskfile/workflow YAML regularly has long single-line commands
+  document-start: disable # not every file here uses the `---` marker
+  truthy:
+    allowed-values: ["true", "false", "on", "off"] # GitHub Actions `on:` triggers this by default
+  comments:
+    min-spaces-from-content: 1

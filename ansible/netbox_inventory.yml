@@ -1,0 +1,140 @@
+---
+# ansible/netbox_inventory.yml — dynamic inventory sourced from NetBox,
+# replacing the static inventory.yml + group_vars/ + host_vars/ pattern.
+#
+# CUTOVER STATUS: live -- Taskfile.yml's ansible:run points here as of
+# 2026-08-25 (ansible:check deliberately still doesn't; see its own task
+# comment for why). inventory.yml/group_vars/host_vars are kept, not yet
+# deleted -- a fallback (`ansible-playbook -i inventory.yml ...`) costs
+# nothing to keep around and the next real playbook run against real
+# infra is the actual proof this works, not just the diff below.
+#
+# Equivalence method, re-run after any change here:
+#   ansible-inventory -i inventory.yml --list > /tmp/static.json
+#   ansible-inventory -i netbox_inventory.yml --list > /tmp/dynamic.json
+# then diff the host lists AND, critically, the exact GROUP NAMES (not
+# just vars) -- caught live 2026-08-25: the NetBox Tags were first named
+# nas_fleet/freeipa_replica/freeipa_bootstrap (descriptive, but not
+# matching anything), and every one of this repo's 5 playbooks targets
+# `hosts: nas_nixos` or `hosts: ipa_replicas` by literal name. Flipping
+# Taskfile.yml with mismatched group names would have made every play
+# silently match zero hosts -- an empty, "successful" run, the worst kind
+# of failure. Tag slugs now match the playbooks' own group names exactly
+# (nas_nixos / ipa_replicas / ipa_bootstrap); ipa_secondary was never
+# actually used as a hosts: target or --limit anywhere live (checked via
+# grep across playbooks/ and roles/), so no 4th tag exists for it.
+# Requires pytz (and pynetbox) on the Python resolving ansible-inventory --
+# missing as of 2026-08-25 (no pyproject.toml/uv.lock in this repo, `uv run`
+# just fell through to the same system binary), fixed the same day via
+# nix-common#167 (ansible's withNetbox = true) + nix-personal#616, active
+# on this dev machine after `task switch:windansea`. Verified live: runs
+# clean with no PYTHONPATH workaround needed. Still worth a proper
+# pyproject.toml/uv.lock for this repo at some point, so Ansible tooling
+# here doesn't depend on whatever happens to be on a given dev machine's
+# system Python -- not attempted here.
+#
+# Scope: role=server catches exactly the 6 hosts this repo's Ansible
+# targets today (nas-sdg/sct/cin devices + ipa-sdg/sct/cin VMs, all tagged
+# Server in NetBox) -- the UDM (Hogtied), switches, APs, cameras, Sonos,
+# Talos nodes, JetKVMs etc. are correctly excluded; none of them are ever
+# an Ansible inventory target (unifi_network_dns_record/
+# unifi_network_ip_reservation/netbox_import_udm_state all
+# delegate_to: localhost and hit the UDM's REST API directly).
+#
+# Ansible group membership (nas_nixos / ipa_replicas / ipa_bootstrap) is
+# now driven by NetBox Tags, not Roles -- Device Role is a
+# physical/inventory taxonomy (what kind of box), Tags are the
+# functional/Ansible-grouping taxonomy (what plays run against it), and
+# here the tag slugs ARE the group names verbatim (see above). See NetBox
+# config contexts scoped to those same 3 tags for the group_vars-
+# equivalent data.
+plugin: netbox.netbox.nb_inventory
+api_endpoint: http://172.29.10.20:8080
+token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
+validate_certs: true
+headers:
+  # ALLOWED_HOSTS on the NetBox container requires this exact Host header
+  # when reached by IP (hosts/nas-sdg/apps/netbox.nix, nix-personal) --
+  # same requirement every other script touching this instance has hit.
+  Host: netbox.mgmt.home.geoffdavis.com
+
+device_query_filters:
+  - role: server
+vm_query_filters:
+  - role: server
+
+interfaces: false # see the ansible_host note below for why this doesn't help compose
+services: false
+config_context: true # this is how group_vars-equivalent data arrives
+flatten_config_context: true # flat host_vars, not nested under .config_context
+plurals: false # `role`/`site`/`status` singular, matching today's flat host_vars shape
+group_names_raw: true # keep NetBox's own tag/role/site/status names as group names
+
+group_by:
+  - tag
+  - role
+  - site
+  - status # surfaces nas-sct/jetkvm-sct-01's "staged" status as its own group
+
+# `site`: native site.slug is authoritative for 4 of the 6 hosts -- NetBox
+# Site here means physical location, and for nas-sdg/nas-cin/ipa-sdg/
+# ipa-cin that already IS the fleet's realm/DNS-suffix code (sdg/cin).
+# Only nas-sct and ipa-sct diverge: physically staged in San Diego,
+# logically Scottsdale -- self-resolves the moment they actually ship (at
+# which point their native site.slug becomes "sct" on its own and this
+# override stops mattering). For those two, and ONLY those two, a
+# `staging_target_site` custom field carries the eventual slug; it's
+# unset (null) on the other 4 -- not a parallel taxonomy carried forever
+# on every host, just a transient flag for the staged minority, cleared
+# as part of a host's actual ship checklist. `compose` (not
+# local_context_data/config_context) is what makes this override work
+# without a name collision: this plugin merges native device attributes
+# (including `site`) AFTER config_context, so a config-context-sourced
+# `site` value gets silently clobbered by the native field regardless of
+# weight (`--flush-cache` made no difference when this was tried live
+# 2026-08-25 -- not a caching issue, a real merge-order behavior, and
+# `rename_variables` runs too late to fix it: only one same-named key
+# survives the collision by the time it executes). `compose` runs last,
+# after native-field merging, so it's the one place an override to `site`
+# actually sticks.
+compose:
+  site: >-
+    custom_fields.staging_target_site
+    if (status.value == 'staged' and custom_fields.staging_target_site)
+    else site.slug
+
+# `ansible_host`: set per-host in NetBox's `local_context_data`, matching
+# inventory.yml's existing per-host choices exactly (nas-sdg over the LAN
+# as the hub; nas-sct/nas-cin and all 3 IPA VMs over their netbird overlay
+# FQDN). NOT derived from primary_ip4 via `compose` -- that would silently
+# point ansible_host at a STALE pre-shipping LAN address for nas-cin
+# (physically in Cincinnati now; its NetBox primary_ip4 is a historical
+# macvlan/DHCP record, not live). Caught by diffing against inventory.yml.
+#
+# Tried deriving it natively instead of hand-typing the netbird FQDN
+# string, live 2026-08-25: every one of these 6 hosts already has a real
+# netbird IP object (created from the netbird API) linked to a proper
+# `wt0` interface (type virtual) -- `interfaces: true` +
+# `compose: {ansible_host: "interfaces | selectattr('name','equalto','wt0')..."}`
+# should have been able to pull ansible_host from that, no duplication.
+# It doesn't work: `interfaces is defined` evaluates to `false` inside
+# `compose` -- unlike `custom_fields`/`site`/`status` (core attributes
+# present on every device/VM API response from the start), `interfaces`
+# is bolted on by a separate API call this plugin makes AFTER compose
+# already ran -- a real ordering limitation, not a Jinja bug to work
+# around with more filters. Falling back to local_context_data is the
+# pragmatic choice, not the ideal one -- the wt0 interfaces/IPs still
+# exist in NetBox as correct DCIM/IPAM data (useful for topology/UI
+# purposes) even though this plugin can't wire them into ansible_host.
+
+# NetBox's own device/VM `tags` and `serial` fields collide with Ansible's
+# reserved keywords of the same name (task/CLI tag filtering, play-level
+# rolling-update batch size) -- ansible-inventory warns on this ("Found
+# variable using reserved name"). No role/playbook here references either
+# as a Jinja var today (checked live), so it's latent, not active -- fixed
+# anyway rather than leaving a known footgun in committed config.
+rename_variables:
+  - pattern: "^tags$"
+    repl: "nb_tags"
+  - pattern: "^serial$"
+    repl: "nb_serial"

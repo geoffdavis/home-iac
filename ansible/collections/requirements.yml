@@ -17,3 +17,9 @@ collections:
     # time. Also provides the `timezone` module used by freeipa_rsyslog.
     # Used by every migrated role that needs credentials.
     version: ">=10.0.0,<14.0.0"
+  - name: netbox.netbox
+    # `nb_inventory` dynamic inventory plugin -- see ansible/netbox_inventory.yml.
+    # Runs alongside inventory.yml during the cutover proving period; not
+    # yet the sole inventory source (Taskfile.yml's ansible:run/ansible:check
+    # still point at inventory.yml until equivalence is confirmed).
+    version: ">=3.0.0,<4.0.0"

@@ -62,6 +62,11 @@ tasks:
       - rm -f environments/*/tfplan
       - rm -f environments/*/.terraform.lock.hcl
 
+  lint:
+    desc: Run the full pre-commit hook set (Terraform, Ansible, secrets, YAML, workflow lint)
+    cmds:
+      - pre-commit run --all-files
+
   ansible:install:
     desc: Install the pinned Ansible collection dependencies
     dir: ansible
@@ -76,6 +81,13 @@ tasks:
       # on PATH — ansible-core is available globally on this repo's
       # dev machines, but ansible-lint isn't.
       - pre-commit run ansible-lint --all-files
+      # Deliberately -i inventory.yml (static), NOT netbox_inventory.yml,
+      # even though ansible:run below uses the dynamic source now:
+      # --syntax-check still resolves the inventory to validate each
+      # play's `hosts:` pattern, so pointing this at the dynamic source
+      # would turn a "static, no live connections" check into one that
+      # needs NETBOX_TOKEN + real NetBox reachability -- contradicting
+      # what this task's own desc promises. Static stays static.
       - >-
         cd ansible && ansible-playbook -i inventory.yml --syntax-check
         playbooks/freeipa-autopatch.yml
@@ -92,4 +104,8 @@ tasks:
       Add --check --diff for a dry run (e.g. against the live FreeIPA VM / UDM).
     dir: ansible
     cmds:
-      - op run --env-file ../.env -- ansible-playbook -i inventory.yml {{.CLI_ARGS}}
+      # -i netbox_inventory.yml as of 2026-08-25 -- see that file's header
+      # for the cutover story and the group-name-collision near-miss it
+      # caught. Fall back to `-i inventory.yml` (still present, not
+      # deleted) if NetBox itself is ever the thing that's down.
+      - op run --env-file ../.env -- ansible-playbook -i netbox_inventory.yml {{.CLI_ARGS}}
