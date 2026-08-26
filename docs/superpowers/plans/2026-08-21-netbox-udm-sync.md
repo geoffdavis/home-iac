@@ -297,13 +297,37 @@ Step 3's write-scoped-token question — reuse Task 2's
 netbox-dns's object types, since it was originally scoped for
 `ipam.IPAddress`) vs. mint a new one — resolved: neither
 `netbox-udm-import-token` nor `netbox-ansible-inventory-token` is the
-write credential in use. A separate token, 1Password
-`op://nas-overlay/netbox-geoff-token/token`, has full write access and
-is what Step 2 actually used. **Task 3's Step 3 write-token-separation
-convention (see that task's Files note) is not honored here** — this is
-a shared/admin-scoped credential, not a role-specific write-scoped one
-minted for this backfill. Worth revisiting before Step 3's backfill role
-hardcodes it as the ongoing convention.
+write credential in use initially. A separate token, 1Password
+`op://nas-overlay/netbox-geoff-token/token`, had full write access
+(tied to `geoff`'s own superuser account) and is what Step 2 actually
+used to create the Zone/View/NameServer.
+
+**Since resolved properly**, per the user's request that agentic edits
+be attributable separately from their own: created a dedicated NetBox
+user `ansible` (id 4, local account — not LDAP-bound, which is fine
+since DRF `TokenAuthentication` looks up the Token row directly and
+never goes through the LDAP login/bind flow), an `ObjectPermission`
+(`ansible-netbox-dns-write`, id 1) scoped to
+`view`/`add`/`change` on `netbox_dns.{view,nameserver,zone,record}`
+only, and a token for that user/permission pair. Stored at 1Password
+`op://nas-overlay/netbox-ansible-service-account/credential` (vault
+`nas-overlay`). **Live-verified 2026-08-26**: succeeds on
+`netbox_dns` reads/writes, 403s on `ipam.ipaddress` and `users` (proof
+the scoping is actually restrictive, not just additive) — deliberately
+excludes `delete`, matching this sync's "never auto-delete, only log
+orphans" principle elsewhere.
+
+Two non-obvious things worth keeping in institutional memory:
+- `POST /api/users/tokens/` returns the secret split across TWO fields
+  (`key`, a 12-char id matching the `display` field, and `token`, the
+  secret suffix) — neither works alone as a Bearer value. The complete
+  credential is the concatenation `"nbt_" + key + "." + token`. Cost two
+  failed rotations to work out live.
+- `netbox-udm-import-token` (Task 2) and `netbox-ansible-inventory-token`
+  (dynamic inventory, PR #13) still run under `geoff`/`admin`, not this
+  new `ansible` account — migrating them is a separate, more invasive
+  change (both are already live/merged) and deliberately out of scope
+  here.
 
 - [x] **Step 1: Install and configure the netbox-dns plugin** on
   nas-sdg's NetBox instance (nix-personal, `hosts/nas-sdg/apps/netbox.nix`)
