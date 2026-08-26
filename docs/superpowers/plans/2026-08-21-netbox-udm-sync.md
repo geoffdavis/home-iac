@@ -177,6 +177,66 @@ Blocked on Task 1 and on geoffdavis/nix-personal#542 (NetBox running).
 - [ ] **Step 9: Update the README.**
 - [ ] **Step 10: Commit.**
 
+**Superseded post-Task-8 (2026-08-26):** Steps 1-10 above shipped in PR
+#16 against `ipam.IPAddress.dns_name` — the spec's documented fallback,
+used only because `netbox-dns` wasn't installed yet at implementation
+time (confirmed live 2026-08-24: `GET /api/status/` → `"plugins":{}`).
+That fallback carried a real, always-known limitation: A/AAAA only, so
+it structurally could not represent nas-sdg's CNAME (`syslog`), its
+three wildcards (`*.nas`/`*.admin`/`*.media`), or the split-horizon
+`nas`/`admin` pair pointing at the netbird overlay address
+(`100.92.233.103`, no IPAM presence) — all five showed up as orphans in
+PR #16's original live dry run, logged but never recreated. Task 8
+installed `netbox-dns`, created the `home.geoffdavis.com` Zone, and
+backfilled all of nas-sdg's static-DNS records into `Record` objects
+(Task 8 Steps 1-3) — once that data existed, PR #16 was reworked in
+place (not superseded by a new PR) to read from `netbox-dns`'s `Record`
+objects instead of `ipam.IPAddress` (Task 8 Steps 4-7):
+
+- `unifi_network_dns_record_netbox_records_endpoint` now points at
+  `/api/plugins/netbox-dns/records/`, zone-filtered by an id resolved
+  live from `unifi_network_dns_record_managed_zone_suffix` (a name
+  lookup, not a hardcoded id — see the "Resolve netbox-dns zone id"
+  task in `tasks/main.yml`).
+- `netbox_ipaddress_dns_records_to_udm` (`filter_plugins/netbox_sync.py`)
+  is gone; `netbox_dns_records_to_udm` replaces it, transforming a
+  `Record`'s `fqdn` (real, server-computed, trailing-dot — used
+  directly, not reconstructed from `name` + zone suffix), `value`
+  (trailing dot stripped for name-shaped types), `status` (a **plain
+  string**, not the nested `{value, label}` shape `ipam.IPAddress`
+  used — the same bug `netbox_import_udm_dns_records`'s write path hit
+  live), and `managed` (skips the zone's own auto-generated SOA/apex-NS
+  bookkeeping records, which have no UDM static-DNS equivalent).
+- Credentials: the existing read-only `netbox-ansible-inventory-token`
+  (already this role's configured token, originally scoped for the
+  dynamic-inventory plugin's `ipam`/`dcim`/`virtualization` needs) was
+  live-verified to also have read access to `netbox_dns.*` object
+  types — confirmed with a direct `GET
+  /api/plugins/netbox-dns/records/` before trusting it, rather than
+  assuming either that token or the separate write-scoped `ansible`
+  service-account token (Task 8's status note) was the right one. No
+  new token needed.
+- Live `--check --diff` against nas-sdg (2026-08-26, after the rework):
+  `changed=0`, **zero orphans** — the syslog CNAME, all three
+  wildcards, and the split-horizon `nas`/`admin` pair all show
+  `exists: True, needs_update: False` (matched), where PR #16's
+  original dry run had logged them as orphans. `ipa.geoffdavis.com`
+  (a different zone, FreeIPA's own — explicitly skip-listed by the
+  Task 8 Step 3 backfill) correctly never enters this sync's view at
+  all, since it falls outside `unifi_network_dns_record_managed_zone_suffix`.
+- Unit tests (`ansible/tests/unit/test_netbox_sync_filters.py`) were
+  rewritten to match: the `ipam.IPAddress`-shaped transform tests are
+  gone, replaced with `netbox_dns_records_to_udm` coverage for a plain
+  A record, a CNAME (trailing-dot stripping), a wildcard (trusting
+  `fqdn` rather than re-deriving it), the `status`-as-plain-string case
+  specifically (the exact shape of bug this rework needs to not
+  reintroduce), `managed` records being skipped, and the zone-apex
+  `"@"` case.
+- Deliberately **not done here**: flipping nas-sdg's `host_vars` to
+  `unifi_network_dns_record_source: netbox` (Task 8 Step 8) — that
+  cutover is still a separate, deliberate decision, not a side effect
+  of this rework landing.
+
 ### Task 4: First real NetBox-sourced write (Gate G4)
 
 Same procedure as the original plan: change one low-risk record in
@@ -438,7 +498,7 @@ Two non-obvious things worth keeping in institutional memory:
   They still exist in the zone as of this commit and need a human to
   remove them by hand (obviously named as test artifacts; harmless, and
   outside this role's own desired-state list either way).
-- [ ] **Step 4: Revive `netbox_dns_records_to_udm`** — the plugin-shaped
+- [x] **Step 4: Revive `netbox_dns_records_to_udm`** — the plugin-shaped
   transform PR #9 originally wrote and unit-tested, deliberately dropped
   from PR #16 when the plugin was confirmed absent. Re-adapt it against
   netbox-dns's actual live API shape rather than assuming PR #9's
@@ -447,18 +507,36 @@ Two non-obvious things worth keeping in institutional memory:
   discipline that caught two real bugs in the `ipam.IPAddress` fallback
   during Task 3 (a pagination `None` crash and a mis-decoded
   external-dns TXT-ownership key format) — assume this plugin's actual
-  shape has its own surprises too.
-- [ ] **Step 5: Point the role's NetBox records endpoint at netbox-dns**
+  shape has its own surprises too. **Done 2026-08-26** — see the Task 3
+  "Superseded post-Task-8" note above for the full empirical findings
+  and the resulting `netbox_dns_records_to_udm` function
+  (`filter_plugins/netbox_sync.py`); PR #9's original version was not
+  reused verbatim, since `fqdn`/`status`/`managed`'s real shapes needed
+  independent live confirmation.
+- [x] **Step 5: Point the role's NetBox records endpoint at netbox-dns**
   instead of `ipam/ip-addresses/`. Keep `unifi_network_dns_record_source`
   as the mode switch (`static` / `netbox`) — this changes what "netbox
-  mode" fetches, not the role's external interface.
-- [ ] **Step 6: `--check` against the backfilled netbox-dns data,
+  mode" fetches, not the role's external interface. **Done** — plus the
+  target zone is now resolved by name to an id live (not hardcoded),
+  see the Task 3 note above.
+- [x] **Step 6: `--check` against the backfilled netbox-dns data,
   confirm zero diffs across every record type this fleet actually has**
   (CNAME, NS, wildcard, split-horizon A) — not just the A/AAAA subset
-  Task 3's Gate G3 covered.
-- [ ] **Step 7: Update the README's "Why `ipam.IPAddress`, not a
+  Task 3's Gate G3 covered. **Done 2026-08-26**, `changed=0`, zero
+  orphans — A, CNAME, wildcard, and split-horizon all confirmed live
+  (see the Task 3 note above for the exact records). **NS not actually
+  exercised**: nas-sdg's only NS record (`ipa.geoffdavis.com`) is a
+  different zone entirely (FreeIPA's own — see Task 8 Step 2's note)
+  and was explicitly skip-listed by the Step 3 backfill rather than
+  imported into `home.geoffdavis.com`, so there is no live NS record in
+  netbox-dns for this gate to have exercised. The transform handles NS
+  the same as CNAME/MX (trailing-dot stripping) by construction, but
+  that path is unit-tested only, not live-verified, for this record
+  type specifically.
+- [x] **Step 7: Update the README's "Why `ipam.IPAddress`, not a
   DNS-record object" section** — no longer true once this lands; replace
-  with the netbox-dns data model description.
+  with the netbox-dns data model description. **Done** —
+  `ansible/roles/unifi_network_dns_record/README.md`.
 - [ ] **Step 8: Flip nas-sdg's `host_vars` to `unifi_network_dns_record_source: netbox`**
   now that its CNAME/NS/wildcard/split-horizon records have a home —
   this is what actually unblocks Task 6 for this host. Side benefit,
@@ -466,8 +544,11 @@ Two non-obvious things worth keeping in institutional memory:
   where the static list's `website-dev.k8s`/`website-prod.k8s` entries
   point at the wrong address (the LB pool's network address, not a real
   host) — netbox mode excludes both as external-dns-owned instead of
-  fighting the live Kubernetes reconciliation every run.
-- [ ] **Step 9: Commit.**
+  fighting the live Kubernetes reconciliation every run. **Deliberately
+  not done in this same change** — a separate, deliberate cutover
+  decision, not a side effect of Steps 4-7 landing.
+- [x] **Step 9: Commit.** PR #16, reworked in place (rebased onto
+  current `main`, force-pushed).
 
 ---
 
