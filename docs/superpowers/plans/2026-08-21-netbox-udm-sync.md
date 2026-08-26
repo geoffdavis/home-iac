@@ -237,7 +237,11 @@ syncs cleanly too.
 
 - [ ] Confirm no `host_vars/*.yml` still sets
   `unifi_network_dns_record_records`, remove the var and the
-  short-circuit, commit.
+  short-circuit, commit. **Blocked for any host whose static list has a
+  CNAME, NS, wildcard, or non-NetBox-tracked-IP record (nas-sdg, today)
+  until Task 8 lands** — see that task for why the `ipam.IPAddress`
+  fallback can't represent them, so those hosts can drop the escape
+  hatch only after their records have a home in netbox-dns.
 
 ### Task 7: Schedule the sync (Gate G6)
 
@@ -246,14 +250,100 @@ syncs cleanly too.
   Update the operator runbook: DNS/reservation edits happen in NetBox now,
   not the UDM UI and not `host_vars`. Commit.
 
+### Task 8: Install netbox-dns, migrate DNS records to a full record model (Gate G7)
+
+**Files:** nix-personal (plugin install/config — separate repo, separate
+PR, not tracked here); create
+`ansible/roles/netbox_import_udm_dns_records/` (or extend Task 2's
+`netbox_import_udm_state`); modify `ansible/filter_plugins/netbox_sync.py`,
+`ansible/roles/unifi_network_dns_record/{tasks/main.yml,
+tasks/netbox_fetch_page.yml, defaults/main.yml, README.md}`.
+
+Surfaced during Task 3's live verification (PR #16, live `--check --diff`
+against nas-sdg): the `ipam.IPAddress.dns_name` fallback Task 3 shipped is
+A/AAAA-only, and structurally can't represent a CNAME or NS record, a
+wildcard (`*.`) name, or any record whose value isn't itself a
+NetBox-tracked IP address. Real, currently-live records on nas-sdg that
+fall in this gap: `syslog.home.geoffdavis.com` (CNAME),
+`ipa.geoffdavis.com` (NS), `*.nas`/`*.admin`/`*.media.home.geoffdavis.com`
+(wildcards), and the split-horizon `nas.home.geoffdavis.com` /
+`admin.home.geoffdavis.com` pair (A records pointing at the netbird
+overlay IP `100.92.233.103`, which NetBox's IPAM has no reason to ever
+track). A host left on `unifi_network_dns_record_source: netbox` today
+stops actively managing these — they're logged as orphans, never
+recreated if deleted — which is why Task 3 kept `static` as the default
+rather than cutting nas-sdg over.
+
+netbox-dns models DNS records as first-class `Record` objects (Zone +
+Record, arbitrary `type`, arbitrary string `value` — not derived from
+`ipam.IPAddress`), which removes all three limitations at once. This was
+always the design spec's stated preference (Open Questions: source from
+the plugin directly if installed; `ipam.IPAddress` was explicitly the
+fallback) — Task 3 used the fallback only because the plugin wasn't
+installed at implementation time, confirmed live via `GET /api/status/`
+returning `"plugins":{}` on 2026-08-24.
+
+**Status: plugin install (Step 1) is in progress** — dispatched
+separately from this plan's own tracking, 2026-08-25. Verify what
+actually landed (plugin version, whether `netbox-bgp` came along with it
+per that same effort) before starting Step 2, don't assume this step's
+prose description above is still accurate to what got installed.
+
+- [ ] **Step 1: Install and configure the netbox-dns plugin** on
+  nas-sdg's NetBox instance (nix-personal, `hosts/nas-sdg/apps/netbox.nix`)
+  — in progress as of 2026-08-25, tracked outside this repo/plan.
+- [ ] **Step 2: Create the `home.geoffdavis.com` Zone** (and any other
+  zones this fleet's static-DNS records span — check every host's
+  current `unifi_network_dns_record_records` for more than one apex,
+  not just nas-sdg's).
+- [ ] **Step 3: One-shot backfill role**
+  (`netbox_import_udm_dns_records`, or extend Task 2's
+  `netbox_import_udm_state`) — same shape as Task 2: GET the UDM's
+  current static-DNS list, create/update the matching netbox-dns
+  `Record` object for each, using a write-scoped token separate from the
+  ongoing-sync's read-only one (same separation rule as Task 2 Step 1).
+  Covers every record type, not just A/AAAA — including the ones Task
+  2's original backfill couldn't represent.
+- [ ] **Step 4: Revive `netbox_dns_records_to_udm`** — the plugin-shaped
+  transform PR #9 originally wrote and unit-tested, deliberately dropped
+  from PR #16 when the plugin was confirmed absent. Re-adapt it against
+  netbox-dns's actual live API shape rather than assuming PR #9's
+  version is still correct — verify field/endpoint names against the
+  real, now-installed plugin. This is the same live-verify-before-trust
+  discipline that caught two real bugs in the `ipam.IPAddress` fallback
+  during Task 3 (a pagination `None` crash and a mis-decoded
+  external-dns TXT-ownership key format) — assume this plugin's actual
+  shape has its own surprises too.
+- [ ] **Step 5: Point the role's NetBox records endpoint at netbox-dns**
+  instead of `ipam/ip-addresses/`. Keep `unifi_network_dns_record_source`
+  as the mode switch (`static` / `netbox`) — this changes what "netbox
+  mode" fetches, not the role's external interface.
+- [ ] **Step 6: `--check` against the backfilled netbox-dns data,
+  confirm zero diffs across every record type this fleet actually has**
+  (CNAME, NS, wildcard, split-horizon A) — not just the A/AAAA subset
+  Task 3's Gate G3 covered.
+- [ ] **Step 7: Update the README's "Why `ipam.IPAddress`, not a
+  DNS-record object" section** — no longer true once this lands; replace
+  with the netbox-dns data model description.
+- [ ] **Step 8: Flip nas-sdg's `host_vars` to `unifi_network_dns_record_source: netbox`**
+  now that its CNAME/NS/wildcard/split-horizon records have a home —
+  this is what actually unblocks Task 6 for this host. Side benefit,
+  confirmed in Task 3's dry run: this also resolves a latent conflict
+  where the static list's `website-dev.k8s`/`website-prod.k8s` entries
+  point at the wrong address (the LB pool's network address, not a real
+  host) — netbox mode excludes both as external-dns-owned instead of
+  fighting the live Kubernetes reconciliation every run.
+- [ ] **Step 9: Commit.**
+
 ---
 
 ## Definition of done
 
 - [ ] Task 1's migration merged as its own reviewable unit, verified
   behavior-identical to `ugreen-nas-compose` before any rewrite started.
-- [ ] All gates G2–G6 passed.
-- [ ] Escape hatch removed (Task 6).
+- [ ] All gates G2–G7 passed.
+- [ ] Escape hatch removed (Task 6) for every host, including the ones
+  that needed Task 8's full record model first.
 - [ ] Sync runs on a schedule (Task 7).
 - [ ] `README.md` reflects the repo's real, two-platform scope.
 - [ ] Lint passes (OpenTofu + the new ansible-lint hook).
