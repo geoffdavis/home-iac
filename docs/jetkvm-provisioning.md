@@ -47,20 +47,27 @@ That is **exit 255, and nothing is copied.** Use a portable stream instead:
 ```sh
 J=172.29.10.6
 F="$HOME/nas-sdg-installer.iso"
-set -o pipefail
-timeout 3000 sh -c "cat '$F' | ssh -o ConnectTimeout=15 root@$J \
-  'cat > /userdata/jetkvm/images/nas-sdg-installer.iso'"
+timeout 3000 ssh -o ConnectTimeout=15 root@$J \
+  'cat > /userdata/jetkvm/images/nas-sdg-installer.iso' < "$F"
 RC=$?
 echo "TRANSFER_RC=$RC"
 ```
 
-> ⚠️ **Do not mask the exit code.** A trailing `echo`, or piping the command
-> into `tail`/`head`, makes the shell report the *last* command's status — so a
-> transfer that died at 255 reports "completed exit 0" and you carry on
-> believing a file exists that does not. Set `-o pipefail`, capture `RC=$?`
-> immediately after the command, and print `RC` as a separate statement. This
-> has bitten this repo more than once; it is a reporting bug, not a transfer
-> bug, and it is the more dangerous of the two because it is silent.
+> ⚠️ **Do not mask the exit code.** Redirecting `$F` into `ssh`'s stdin
+> instead of piping it through `cat` matters here, not just style: a piped
+> `sh -c "cat '$F' | ssh ..."` runs the pipeline in a *new* shell, so an
+> outer `set -o pipefail` never applies to it — `cat` can fail (missing or
+> unreadable `$F`) while `ssh` still exits 0 having written an empty
+> destination, and `RC=$?` silently reports success. The redirect form above
+> has no pipe to mask: a missing `$F` fails the redirection itself, before
+> `ssh` ever runs, so `RC=$?` reflects the real outcome directly. If you ever
+> do need a pipeline here, `pipefail` only protects a caller that is set in
+> the *same* shell executing the pipe — not an outer shell wrapping a
+> `sh -c` subprocess. A trailing `echo`, or piping the command into
+> `tail`/`head`, has the same masking effect by making the shell report the
+> *last* command's status instead. This has bitten this repo more than once;
+> it is a reporting bug, not a transfer bug, and it is the more dangerous of
+> the two because it is silent.
 
 **Verify by size and checksum on the device, never by exit code alone:**
 
@@ -177,6 +184,15 @@ curl -s -b cookies.txt http://<ip>/device   # {"authMode":"password", "loopbackO
 
 op item create --category login --title "jetkvm-<site>-<nn>-web" --vault nas-overlay \
   --url "http://jetkvm-<nn>.mgmt.home.geoffdavis.com" "password=$(cat pw.txt)"
+
+# Confirm it filed before you rely on it being the only copy:
+op item get "jetkvm-<site>-<nn>-web" --vault nas-overlay >/dev/null
+
+# pw.txt/setup.json hold the plaintext password, cookies.txt an authenticated
+# session — none of them should outlive this step now that 1Password has the
+# credential. Clean up rather than leaving plaintext creds sitting in
+# whatever directory you ran this from.
+rm -f pw.txt setup.json cookies.txt
 ```
 
 ## 3. Hostname and Developer Mode (browser)

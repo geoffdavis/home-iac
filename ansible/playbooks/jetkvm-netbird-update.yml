@@ -228,6 +228,24 @@
       changed_when: "'swap dispatched' in _swap.stdout"
       failed_when: "'swap dispatched' not in _swap.stdout"
 
+    # The detached swap stops netbird before restarting it, which drops the
+    # overlay tunnel this very session is running over — the next task's SSH
+    # attempt can land squarely in that outage. `until`/`retries` on that
+    # task only re-evaluate *completed* task results, they never retry a
+    # connection failure, so an unreachable host there aborts the whole play
+    # instead of continuing the serial run (review finding). Wait for the
+    # transport itself to come back first — wait_for_connection tests the
+    # connection plugin directly (no python module execution required), so
+    # it holds on this no-python raw-only device just like everything else
+    # here.
+    - name: Wait for the console's SSH transport to come back after the restart
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      ansible.builtin.wait_for_connection:
+        connect_timeout: 10
+        delay: 5
+        sleep: 5
+        timeout: 120
+
     - name: Wait for the device to return on the new version
       ansible.builtin.raw: |
         export SSL_CERT_FILE=/userdata/netbird/cacert.pem
