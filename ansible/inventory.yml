@@ -45,6 +45,31 @@ all:
             ipa-sct:
             ipa-cin:
 
+    # oob_kvm: the JetKVM out-of-band consoles (at least one per site, netbird
+    # peers in class-oob-kvm). Tiny armv7l-SoC busybox devices — netbird ships
+    # no armv7 build; the linux_armv6 artifact is the compatible one. NO python
+    # — only `raw` (and control-node delegation) works against them; plays set
+    # gather_facts: false. SSH is root@ with the op-Personal/op-ansible keys
+    # (dropbear, dev mode); no sftp-server, so file transfer is cat-over-ssh,
+    # never copy/script modules. No ICMP in the OOB policies — don't gate on
+    # ping. See playbooks/jetkvm-netbird-update.yml (#207) and the bring-up
+    # procedure in docs/jetkvm-provisioning.md.
+    #
+    # sdg has two: jetkvm-sdg-02 is bolted to nas-sdg permanently, while
+    # jetkvm-sdg-01 is the roaming rack unit the patch panel keeps borrowing
+    # for other hosts — which is exactly why -02 exists. Do not assume
+    # "the sdg console" means -01.
+    oob_kvm:
+      hosts:
+        jetkvm-sdg-01:
+          ansible_host: jetkvm-sdg-01.netbird.cloud
+        jetkvm-sdg-02:
+          ansible_host: jetkvm-sdg-02.netbird.cloud
+        jetkvm-sct-01:
+          ansible_host: jetkvm-sct-01.netbird.cloud
+        jetkvm-cin-01:
+          ansible_host: jetkvm-cin-01.netbird.cloud
+
     # Site groups: cross-cutting dimension orthogonal to the functional groups
     # above. Each host belongs to BOTH its functional group AND its site group;
     # site group_vars declare `site: <code>` once and playbooks reference
@@ -52,23 +77,19 @@ all:
     #
     # Adding a new site: create group_vars/site_<code>.yml with `site: <code>`,
     # add a site_<code> entry here, list the per-site hosts.
-    #
-    # NOTE: ugreen-nas-compose's site groups also carry oob_kvm (JetKVM)
-    # members — deliberately dropped here. Task 1 of
-    # docs/superpowers/plans/2026-08-21-netbox-udm-sync.md scopes this
-    # migration to exactly the seven roles it names; the JetKVM
-    # out-of-band-console tooling (playbooks/jetkvm-netbird-update.yml,
-    # the oob_kvm inventory group, scripts/cf-ssh.sh) isn't one of them
-    # and stays in ugreen-nas-compose for now.
     site_sdg:
       hosts:
         nas-sdg:
         ipa-sdg:
+        jetkvm-sdg-01:
+        jetkvm-sdg-02:
     site_sct:
       hosts:
         nas-sct:
         ipa-sct:
+        jetkvm-sct-01:
     site_cin:
       hosts:
         nas-cin:
         ipa-cin:
+        jetkvm-cin-01:

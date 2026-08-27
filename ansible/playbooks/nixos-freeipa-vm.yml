@@ -32,7 +32,19 @@
   # == NixOS before any state-changing call, and provisioning uses
   # ansible_facts.date_time.epoch for staging-path entropy. No become-pass
   # pre_task dance like the TrueNAS twin — nas_nixos connects as root.
-  gather_facts: true
+  #
+  # gather_facts is false at the play level (not true, despite facts still
+  # being load-bearing) because Ansible's implicit "Gathering Facts" task
+  # runs BEFORE pre_tasks — it would connect to a skip-worthy host before
+  # the reachability gate below ever got a chance to run. Facts are
+  # gathered explicitly, via ansible.builtin.setup, immediately after the
+  # gate instead; see tasks/netbox_status_gate.yml.
+  gather_facts: false
   any_errors_fatal: true
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
+    - name: Gather facts (explicit — see gather_facts note above)
+      ansible.builtin.setup: {}
   roles:
     - role: nixos_freeipa_vm

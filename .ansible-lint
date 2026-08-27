@@ -28,7 +28,24 @@ exclude_paths:
 #   - name[template]: one task name embeds a Jinja expr mid-sentence.
 # Revisit when Task 3 (rewriting unifi_network_dns_record) actually touches
 # these files for a reason other than the move itself.
+#
+# Two more added for the JetKVM migration (home-iac#24, same "verbatim,
+# no changes yet" rule), both in playbooks/jetkvm-netbird-update.yml and
+# both already justified by an inline comment in the file predating the
+# move — not accidental, and fixing either would undo a documented live
+# finding:
+#   - risky-shell-pipe: the checksum-verify task's `grep | cut` pipeline
+#     deliberately skips `set -o pipefail` (see the task's own comment —
+#     pinning /bin/bash for pipefail broke the play on NixOS control
+#     nodes, where /bin holds only /bin/sh; the empty-`expected` check
+#     already catches the failure pipefail would have caught).
+#   - command-instead-of-module: the extract task uses plain `tar`, not
+#     `ansible.builtin.unarchive`, because `unarchive` requires GNU tar
+#     and refuses macOS bsdtar (also a live finding, per the task's
+#     comment).
 warn_list:
   - var-naming[no-role-prefix]
   - yaml[line-length]
   - name[template]
+  - risky-shell-pipe
+  - command-instead-of-module
