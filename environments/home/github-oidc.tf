@@ -117,6 +117,38 @@ resource "aws_iam_role_policy" "github_actions_digger" {
           aws_iam_policy.home_assistant_backup_s3_access.arn,
         ]
       },
+      {
+        # Self-management: this role reads/updates its own role, inline
+        # policy, and the OIDC provider it trusts. Missed in the initial
+        # policy -- every `tofu plan` refreshes these along with
+        # everything else this environment manages.
+        Sid    = "ManagedOwnRoleAndOidcProvider"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRoleTags",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetOpenIDConnectProvider",
+          "iam:CreateOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:AddClientIDToOpenIDConnectProvider",
+          "iam:RemoveClientIDFromOpenIDConnectProvider",
+          "iam:TagOpenIDConnectProvider",
+          "iam:UntagOpenIDConnectProvider",
+          "iam:ListOpenIDConnectProviderTags",
+        ]
+        Resource = [
+          aws_iam_role.github_actions_digger.arn,
+          aws_iam_openid_connect_provider.github_actions.arn,
+        ]
+      },
     ]
   })
 }

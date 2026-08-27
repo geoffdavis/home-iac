@@ -22,14 +22,22 @@ jobs:
       statuses: write       # required to validate combined PR status
 
     steps:
+      # persist-credentials: false -- digger's own checkout step
+      # (invoked from inside diggerhq/digger below) sets its own git
+      # auth header; leaving this step's credentials persisted causes
+      # a "Duplicate header: Authorization" 400 when digger fetches.
       - uses: actions/checkout@v7
-      - name: ${{ fromJSON(github.event.intuts.spec).job_id }}
+        with:
+          persist-credentials: false
+      - name: ${{ fromJSON(github.event.inputs.spec).job_id }}
         run: echo "job id ${{ fromJSON(github.event.inputs.spec).job_id }}"
       - uses: diggerhq/digger@vLatest
         with:
           digger-spec: ${{ inputs.spec }}
           setup-opentofu: true
           opentofu-version: 1.9.1
+          opentofu-tfe-hostname: otaco.app
+          opentofu-tfe-token: ${{ secrets.TFE_TOKEN }}
           setup-aws: true
           aws-region: us-west-2
           aws-role-to-assume: ${{ vars.AWS_DIGGER_ROLE_ARN }}
