@@ -104,10 +104,11 @@ tasks:
       resolve via op run, matching this repo's Terraform convention.
       Usage: task ansible:run -- playbooks/unifi-network.yml [ansible-playbook args...]
       Add --check --diff for a dry run (e.g. against the live FreeIPA VM / UDM).
-      NOTE: this forces the dynamic NetBox inventory (see below) -- plays
-      targeting hosts NetBox doesn't model as Ansible targets (currently
-      just oob_kvm / playbooks/jetkvm-netbird-update.yml) silently match
-      zero hosts here. Use ansible:run-static for those.
+      Covers oob_kvm / playbooks/jetkvm-netbird-update.yml too as of #29's
+      cutover (folded into PR #28) -- netbox_inventory.yml's
+      device_query_filters now include role=oob-management alongside
+      role=server, so the JetKVM consoles resolve here same as everything
+      else. Use ansible:run-static only as the NetBox-is-down fallback.
     dir: ansible
     cmds:
       # -i netbox_inventory.yml as of 2026-08-25 -- see that file's header
@@ -119,15 +120,14 @@ tasks:
   ansible:run-static:
     desc: >-
       Run a migrated playbook against real infrastructure via the static
-      inventory.yml, bypassing NetBox entirely. For plays whose hosts
-      NetBox's dynamic inventory doesn't (and, for some, can't sanely)
-      model as Ansible targets -- today that's the oob_kvm JetKVM consoles:
-      netbox_inventory.yml's device_query_filters deliberately scope to
-      role=server (see that file's header), and JetKVMs are tiny
-      python-less busybox boxes with no clean equivalent NetBox device
-      role/data to drive an Ansible connection from. Route plays like that
-      through here instead of task ansible:run, which would silently match
-      zero hosts (Codex review, PR #28).
+      inventory.yml, bypassing NetBox entirely. Kept as a fallback for when
+      NetBox itself is down (same convention as nas_nixos/ipa_replicas) --
+      not the primary path for any play as of #29's oob_kvm cutover into PR
+      #28: netbox_inventory.yml now resolves oob_kvm same as every other
+      group, so task ansible:run is the supported default for
+      jetkvm-netbird-update.yml too. inventory.yml/group_vars/oob_kvm.yml
+      stay in the repo, not yet deleted, matching how nas_nixos/ipa_replicas
+      are handled.
       Usage: task ansible:run-static -- playbooks/jetkvm-netbird-update.yml --limit jetkvm-sdg-01 [ansible-playbook args...]
     dir: ansible
     cmds:

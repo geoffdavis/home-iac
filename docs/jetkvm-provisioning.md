@@ -321,19 +321,18 @@ Nothing about a console is auto-discovered. Four places:
 Then confirm the inventory and connection settings actually work end to end:
 
 ```sh
-task ansible:run-static -- playbooks/jetkvm-netbird-update.yml --limit jetkvm-<site>-<nn>
+task ansible:run -- playbooks/jetkvm-netbird-update.yml --limit jetkvm-<site>-<nn>
 ```
 
-**Not `task ansible:run`.** That target forces the dynamic NetBox
-inventory, which deliberately excludes JetKVMs (`netbox_inventory.yml`
-scopes to `role: server`) — it would silently match zero hosts instead of
-failing loudly. `ansible:run-static` routes through the static
-`inventory.yml` (where `oob_kvm` actually lives) instead. Equivalent to
-`cd ansible && uv run ansible-playbook playbooks/jetkvm-netbird-update.yml
---limit jetkvm-<site>-<nn>` (bare `ansible-playbook`, no `-i`, also
-resolves to the static inventory via `ansible.cfg`'s default) — the Task
-wrapper is preferred for the 1Password `op run` credential injection it
-adds, matching how every other migrated playbook in this repo is run.
+As of the `oob_kvm` NetBox cutover (#29, folded into PR #28),
+`netbox_inventory.yml`'s `device_query_filters` include `role:
+oob-management` alongside `role: server`, so the JetKVM consoles resolve
+through the same dynamic, NetBox-sourced path as every other host in this
+repo — no special-casing needed. `ansible:run-static` (`-i inventory.yml`,
+bypassing NetBox entirely) still exists as a fallback if NetBox itself is
+ever the thing that's down, same convention as `nas_nixos`/`ipa_replicas`;
+use it the same way: `task ansible:run-static -- playbooks/jetkvm-netbird-update.yml
+--limit jetkvm-<site>-<nn>`.
 
 **Pin the version.** With no `-e netbird_version=`, the play resolves the
 *latest* GitHub release and would upgrade the fleet as a side effect of what
