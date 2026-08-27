@@ -305,9 +305,19 @@ Nothing about a console is auto-discovered. Four places:
 Then confirm the inventory and connection settings actually work end to end:
 
 ```sh
-cd ansible
-uv run ansible-playbook playbooks/jetkvm-netbird-update.yml --limit jetkvm-<site>-<nn>
+task ansible:run-static -- playbooks/jetkvm-netbird-update.yml --limit jetkvm-<site>-<nn>
 ```
+
+**Not `task ansible:run`.** That target forces the dynamic NetBox
+inventory, which deliberately excludes JetKVMs (`netbox_inventory.yml`
+scopes to `role: server`) — it would silently match zero hosts instead of
+failing loudly. `ansible:run-static` routes through the static
+`inventory.yml` (where `oob_kvm` actually lives) instead. Equivalent to
+`cd ansible && uv run ansible-playbook playbooks/jetkvm-netbird-update.yml
+--limit jetkvm-<site>-<nn>` (bare `ansible-playbook`, no `-i`, also
+resolves to the static inventory via `ansible.cfg`'s default) — the Task
+wrapper is preferred for the 1Password `op run` credential injection it
+adds, matching how every other migrated playbook in this repo is run.
 
 **Pin the version.** With no `-e netbird_version=`, the play resolves the
 *latest* GitHub release and would upgrade the fleet as a side effect of what
