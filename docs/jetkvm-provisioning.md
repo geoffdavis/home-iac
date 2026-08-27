@@ -334,6 +334,14 @@ ever the thing that's down, same convention as `nas_nixos`/`ipa_replicas`;
 use it the same way: `task ansible:run-static -- playbooks/jetkvm-netbird-update.yml
 --limit jetkvm-<site>-<nn>`.
 
+Running the play fleet-wide (no `--limit`) now skips any console NetBox
+doesn't currently report as `active`/`staged` — a `meta: end_host` gate on
+the device's NetBox `status`, added because a genuinely offline unit (e.g.
+`jetkvm-cin-01`, whole Cincinnati site down) otherwise failed loudly on its
+first device task every run, burying a real failure among expected noise.
+See the gate's comment in `jetkvm-netbird-update.yml` for the exact
+condition.
+
 **Pin the version.** With no `-e netbird_version=`, the play resolves the
 *latest* GitHub release and would upgrade the fleet as a side effect of what
 you meant as a check. Pass the version the fleet is already on to get a true

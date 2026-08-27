@@ -92,7 +92,14 @@ interfaces: false # see the ansible_host note below for why this doesn't help co
 services: false
 config_context: true # this is how group_vars-equivalent data arrives
 flatten_config_context: true # flat host_vars, not nested under .config_context
-plurals: false # `role`/`site`/`status` singular, matching today's flat host_vars shape
+plurals: false # `role`/`site` singular, matching today's flat host_vars shape --
+# `status` is the one exception: it stays the nested NetBox API
+# {value, label} dict even with plurals: false (verified live via
+# `ansible-inventory --host`, 2026-08-27 -- see jetkvm-netbird-update.yml's
+# reachability gate, which keys off `status.value` for exactly this
+# reason). The `compose:` block below already relied on that nested shape
+# (`status.value == 'staged'`); this comment previously implied status
+# flattened too, which it does not.
 group_names_raw: true # keep NetBox's own tag/role/site/status names as group names
 
 group_by:

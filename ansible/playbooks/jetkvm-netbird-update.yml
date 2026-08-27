@@ -30,11 +30,36 @@
 # tasks (guarded to effectively run once, facts parked on localhost via
 # delegate_facts) so `--limit jetkvm-x` works without remembering to
 # include localhost — the two-play layout broke exactly that way.
+#
+# Fleet-wide runs (no --limit) skip any host NetBox doesn't currently
+# consider reachable: only status active/staged are targeted (allowlist,
+# not denylist — new/future NetBox status values default to skipped, not
+# accidentally included). As of 2026-08-27: jetkvm-sdg-01/02 active,
+# jetkvm-sct-01 staged (expected up), jetkvm-cin-01 offline (the whole
+# Cincinnati site is down). Without this, a fleet run against cin-01
+# produced a loud SSH-unreachable failure on its very first device task
+# every single time — survivable under serial: 1 without any_errors_fatal,
+# but noisy enough to mask a real new failure among the expected noise.
+# Gate logic lives in tasks/netbox_status_gate.yml (shared with the
+# freeipa_* playbooks, which hit the same problem against nas_nixos/
+# ipa_replicas) — see that file for the `status.value` hostvar-shape note.
+#
+# meta: end_host only ends *this* host's remaining tasks, so importing the
+# gate as the very first pre_task is safe even though the control-node
+# fetch below is guarded to run only once per play
+# (hostvars['localhost'].nb_target is not defined): if the first host in
+# serial order gets skipped, the next non-skipped host still finds
+# nb_target undefined and does the once-only fetch itself — the "once"
+# guard tracks localhost state, not literal host order, so skipping never
+# starves it or duplicates it.
 ---
 - name: Update netbird on the JetKVM OOB consoles
   hosts: oob_kvm
   gather_facts: false
   serial: 1
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
   tasks:
     # ── control-node half (first serial batch only) ──────────────────────
     - name: Resolve latest release tag from GitHub
