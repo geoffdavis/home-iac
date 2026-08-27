@@ -1,0 +1,9 @@
+# actionlint config — declares the self-hosted runner labels this repo
+# targets (nas-sdg, provisioned in nix-personal), so actionlint doesn't
+# flag ansible-reconcile.yml's runs-on as an unknown label.
+self-hosted-runner:
+  labels:
+    - nix
+    - x86_64-linux
+    - nas-sdg
+    - nvme-nix-pool
