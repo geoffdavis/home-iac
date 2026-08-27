@@ -36,6 +36,8 @@ jobs:
           digger-spec: ${{ inputs.spec }}
           setup-opentofu: true
           opentofu-version: 1.9.1
+          opentofu-tfe-hostname: otaco.app
+          opentofu-tfe-token: ${{ secrets.TFE_TOKEN }}
           setup-aws: true
           aws-region: us-west-2
           aws-role-to-assume: ${{ vars.AWS_DIGGER_ROLE_ARN }}
