@@ -58,6 +58,41 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
 - Never bypass pre-commit hooks (`--no-verify`) to get a commit through. If
   a hook fails, fix the underlying issue.
 
+## Scheduled Ansible reconciliation
+
+- `.github/workflows/ansible-reconcile.yml` re-runs the idempotent playbooks
+  (FreeIPA day-2 ops, UniFi UDM network sync) daily — Ansible's substitute
+  for Puppet-style continuous enforcement, since a play only converges
+  state when something actually re-runs it.
+- Runs on `[self-hosted, nix, x86_64-linux, nas-sdg]`, not the generic
+  self-hosted pool — this job needs LAN reachability to the UDM/FreeIPA
+  replicas and to nas-sdg's 1Password Connect server (`172.29.10.20:8081`),
+  none of which the `nas-sct`/`nas-cin` runner spokes have. Both the runner
+  and the Connect server are provisioned in the separate `nix-personal`
+  repo (`hosts/nas-sdg/default.nix`'s `my.ghRunners.repos`,
+  `hosts/nas-sdg/apps/onepassword-connect.nix`) — not something to touch
+  from this repo.
+- Credentials come from 1Password **Connect**, not a Service Account (this
+  account is on a Family plan, which doesn't support Service Accounts) —
+  `OP_CONNECT_HOST`/`OP_CONNECT_TOKEN` env vars, which `op` uses
+  transparently in place of a desktop-app session. The `OP_CONNECT_TOKEN`
+  repo secret is the Connect server's own bearer token (1Password item
+  `nas-sdg-onepassword-connect` in `nas-overlay`, field `credential`).
+- Connect is scoped **read-only to the `nas-overlay` vault only**. The
+  workflow uses `ansible/.env.ci` (NetBox token only — deliberately not the
+  repo-root `.env`, which references `op://Private/...` AWS keys Connect
+  can't resolve) and overrides each `unifi_network_*` role's
+  `*_creds_op_vault` to `nas-overlay`, since those roles default to the
+  `Automation` vault. The UDM credential item (`UniFi UDM Pro (ansible)`)
+  is deliberately duplicated into `nas-overlay` for this workflow rather
+  than expanding Connect's scope — keep both copies in sync if the UDM
+  credential ever rotates.
+- The same workflow's `jetkvm-netbird-check` job is deliberately
+  check-only (`--skip-tags update`, per `jetkvm-netbird-update.yml`'s own
+  header) — JetKVM firmware swaps stay a manual decision, never
+  auto-applied on a schedule. Don't change this job to actually apply
+  updates without an explicit ask; it's reporting-only by design.
+
 ## Git / PRs
 
 - This is a solo-maintainer repo (branch protection on `main` requires PRs

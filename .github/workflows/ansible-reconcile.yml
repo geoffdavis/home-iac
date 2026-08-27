@@ -1,0 +1,85 @@
+name: Ansible Reconciliation
+
+# Ansible has no Puppet-style continuous enforcement -- a play only
+# converges state when something actually runs it. This is the periodic
+# re-apply that substitutes for that: idempotent plays, re-run on a
+# schedule, so drift gets caught within a day instead of at the next
+# person to notice.
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    # nas-sdg specifically, not the generic self-hosted pool: this job
+    # needs LAN reachability to the UDM and FreeIPA replicas, and to the
+    # 1Password Connect server, which only nas-sdg has (see AGENTS.md).
+    runs-on: [self-hosted, nix, x86_64-linux, nas-sdg]
+    env:
+      OP_CONNECT_HOST: http://172.29.10.20:8081
+      OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Reconcile FreeIPA autopatch
+        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-autopatch.yml
+
+      - name: Reconcile FreeIPA metrics
+        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-metrics.yml
+
+      - name: Reconcile FreeIPA rsyslog forwarding
+        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-rsyslog.yml
+
+      - name: Reconcile UniFi UDM network config
+        # UDM creds default to the Automation vault (see each
+        # unifi_network_* role's defaults/main.yml); Connect on nas-sdg is
+        # scoped to nas-overlay only, so this points at a duplicate of the
+        # same "UniFi UDM Pro (ansible)" item kept there for CI's sake.
+        run: >-
+          op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
+          playbooks/unifi-network.yml
+          -e unifi_network_dns_record_creds_op_vault=nas-overlay
+          -e unifi_network_dhcp_pxe_creds_op_vault=nas-overlay
+          -e unifi_network_port_forward_creds_op_vault=nas-overlay
+          -e unifi_network_ip_reservation_creds_op_vault=nas-overlay
+
+  # Deliberately NOT part of the `reconcile` job above, and deliberately
+  # check-only: JetKVM firmware swaps are risky enough (see
+  # jetkvm-netbird-update.yml's header on the overlay-saturation failure
+  # mode) that they stay a human decision, never auto-applied on a
+  # schedule. `--skip-tags update` is the playbook's own documented way to
+  # get a real on-device version read ("deployed X -> target Y") while
+  # skipping every download/stage/swap task, which are all tagged `update`.
+  jetkvm-netbird-check:
+    runs-on: [self-hosted, nix, x86_64-linux, nas-sdg]
+    env:
+      OP_CONNECT_HOST: http://172.29.10.20:8081
+      OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Check JetKVM netbird versions (report only, no upgrade)
+        run: |
+          {
+            echo '## JetKVM netbird version check'
+            echo '```'
+            op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

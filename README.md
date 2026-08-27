@@ -32,6 +32,10 @@ out-of-band console maintenance.
   per-site JetKVM consoles (`playbooks/jetkvm-netbird-update.yml`, the
   `oob_kvm` inventory group); see `docs/jetkvm-provisioning.md` for the
   bring-up procedure.
+- **Scheduled reconciliation** — the FreeIPA day-2 ops and UniFi UDM sync
+  above also run daily via `.github/workflows/ansible-reconcile.yml`, on a
+  self-hosted runner with LAN access to those targets; see `AGENTS.md` for
+  the credential/runner details.
 
 ## Prerequisites
 
