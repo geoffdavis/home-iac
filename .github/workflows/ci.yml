@@ -24,8 +24,14 @@ jobs:
         with:
           tofu_wrapper: false
 
+      # pre-commit's ansible-lint hook is pinned to a release whose venv
+      # still needs a python3.13 interpreter (see .pre-commit-config.yaml);
+      # installing both keeps that hook working while giving pre-commit
+      # itself the newer 3.14 default.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: |
+            3.13
+            3.14
 
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
