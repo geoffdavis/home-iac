@@ -115,6 +115,54 @@ resource "aws_iam_role_policy" "github_actions_digger" {
         Resource = [
           aws_iam_user.home_assistant_backup.arn,
           aws_iam_policy.home_assistant_backup_s3_access.arn,
+          # Orphaned resources (tracked in state, no longer declared in
+          # config anywhere) -- confirmed safe to destroy 2026-08-27.
+          # Remove this pair of ARNs once the destroy has landed and
+          # they're gone from state.
+          "arn:aws:iam::078129923125:user/longhorn-backup-user",
+          "arn:aws:iam::078129923125:policy/longhorn-backup-s3-access",
+        ]
+      },
+      {
+        # Self-management: this role reads/updates its own role, inline
+        # policy, and the OIDC provider it trusts. Missed in the initial
+        # policy -- every `tofu plan` refreshes these along with
+        # everything else this environment manages.
+        Sid    = "ManagedOwnRoleAndOidcProvider"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRoleTags",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetOpenIDConnectProvider",
+          "iam:CreateOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:AddClientIDToOpenIDConnectProvider",
+          "iam:RemoveClientIDFromOpenIDConnectProvider",
+          "iam:TagOpenIDConnectProvider",
+          "iam:UntagOpenIDConnectProvider",
+          "iam:ListOpenIDConnectProviderTags",
+        ]
+        Resource = [
+          aws_iam_role.github_actions_digger.arn,
+          aws_iam_openid_connect_provider.github_actions.arn,
+        ]
+      },
+      {
+        # Same orphaned-bucket cleanup as above, for the S3 side.
+        Sid    = "OrphanedLonghornBucket"
+        Effect = "Allow"
+        Action = "s3:*"
+        Resource = [
+          "arn:aws:s3:::longhorn-backups-home-ops",
+          "arn:aws:s3:::longhorn-backups-home-ops/*",
         ]
       },
     ]
