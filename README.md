@@ -1,12 +1,8 @@
 # home-iac
 
-Infrastructure-as-code for the home lab: OpenTofu (Terraform) for AWS, and
-(since the migration in
-[docs/superpowers/plans/2026-08-21-netbox-udm-sync.md](docs/superpowers/plans/2026-08-21-netbox-udm-sync.md))
-Ansible for FreeIPA replica management, UniFi UDM network integration, and
-JetKVM out-of-band console maintenance. The Ansible half moved here from
-`ugreen-nas-compose`, which is being retired — see that plan's Task 1, and
-issue #24 for the JetKVM tooling, for the migration details.
+Infrastructure-as-code for the home lab: OpenTofu for AWS, and Ansible for
+FreeIPA replica management, UniFi UDM network integration, and JetKVM
+out-of-band console maintenance.
 
 ## What it manages
 
@@ -14,7 +10,11 @@ issue #24 for the JetKVM tooling, for the migration details.
 
 - **S3 buckets** for backups (Longhorn, Home Assistant, PostgreSQL)
 - **IAM users and policies** for backup service accounts
-- **State backend** (S3 bucket + DynamoDB lock table)
+- **State backend** — [OpenTaco Cloud](https://otaco.app); see
+  [State backend](#state-backend) below
+- **GitHub OIDC role for CI** — lets
+  [Digger/OpenTaco](https://opentaco.dev) run plan/apply from GitHub
+  Actions without static AWS keys; see [PR automation](#pr-automation)
 
 **Ansible (FreeIPA + UniFi UDM):**
 
@@ -42,6 +42,8 @@ issue #24 for the JetKVM tooling, for the migration details.
 - [Task](https://taskfile.dev/) runner
 - AWS credentials stored in 1Password (OpenTofu); UDM + FreeIPA credentials
   in the `Automation` / `nas-overlay` 1Password vaults (Ansible)
+- An [OpenTaco](https://otaco.app) account with access to this repo's
+  workspace, logged in locally via `tofu login otaco.app`
 
 ## Usage
 
@@ -63,12 +65,14 @@ task ansible:run -- playbooks/unifi-network.yml                 # real run
 ## Structure
 
 ```
+digger.yml             # Digger/OpenTaco project config (see PR automation)
 environments/
   home/                # home lab environment
-    backend.tf         # S3 remote state backend
+    cloud.tf           # OpenTaco Cloud remote state backend
+    github-oidc.tf     # GitHub OIDC provider/role for CI plan/apply
     main.tf            # AWS provider + common tags
     versions.tf        # provider version constraints
-    state-backend.tf   # state bucket + DynamoDB table resources
+    state-backend.tf   # legacy state bucket + lock table (see State backend)
     s3-buckets.tf      # workload S3 buckets
     s3-iam-access.tf   # IAM users + policies for backup access
     variables.tf       # input variables
@@ -88,9 +92,30 @@ docs/
 
 ## State backend
 
-State is stored in S3 (`opentofu-state-home-iac-<account-id>`) with DynamoDB locking.
-If the state bucket is destroyed, bootstrap with local state first:
+State lives in [OpenTaco Cloud](https://otaco.app) (`cloud.tf`), authenticated
+via `tofu login otaco.app` — no AWS credentials needed just to run `tofu
+init`/`plan`/`apply` against state itself.
 
-1. Temporarily switch `backend.tf` to `backend "local" {}`
-2. `tofu init -reconfigure && tofu apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks`
-3. Restore the S3 backend config and `tofu init -migrate-state`
+`state-backend.tf`'s S3 bucket and DynamoDB table are a legacy backend, kept
+as plain (no longer backend-wired) resources rather than destroyed.
+
+To fall back to local state if the OpenTaco workspace is ever unreachable:
+
+1. Comment out the `cloud` block in `cloud.tf`
+2. `tofu init -migrate-state` (prompts to copy state to local)
+
+## PR automation
+
+[Digger](https://github.com/diggerhq/digger)/OpenTaco runs `tofu plan` on
+PRs and `apply` on merge for the `environments/home` project, configured by:
+
+- `digger.yml` — project definition (`dir: environments/home`,
+  `opentofu: true`), auto-merge, and PR comment reporting
+- `.github/workflows/digger_workflow.yml` — the `workflow_dispatch` job
+  OpenTaco's GitHub App (already installed on this repo) dispatches with a
+  computed `spec`
+- `environments/home/github-oidc.tf` — the AWS side: an IAM OIDC provider +
+  role scoped to just the resources this environment manages, assumed via
+  `aws-role-to-assume` (no static `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
+  secrets). The role ARN is set as the `AWS_DIGGER_ROLE_ARN` repo Actions
+  variable.
