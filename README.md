@@ -3,9 +3,10 @@
 Infrastructure-as-code for the home lab: OpenTofu (Terraform) for AWS, and
 (since the migration in
 [docs/superpowers/plans/2026-08-21-netbox-udm-sync.md](docs/superpowers/plans/2026-08-21-netbox-udm-sync.md))
-Ansible for FreeIPA replica management and UniFi UDM network integration.
-The Ansible half moved here from `ugreen-nas-compose`, which is being
-retired — see that plan's Task 1 for the migration details.
+Ansible for FreeIPA replica management, UniFi UDM network integration, and
+JetKVM out-of-band console maintenance. The Ansible half moved here from
+`ugreen-nas-compose`, which is being retired — see that plan's Task 1, and
+issue #24 for the JetKVM tooling, for the migration details.
 
 ## What it manages
 
@@ -27,6 +28,10 @@ retired — see that plan's Task 1 for the migration details.
   (`unifi_network_dhcp_pxe`), port forwarding
   (`unifi_network_port_forward`), all reconciled idempotently via the
   UDM's REST API.
+- **JetKVM out-of-band console maintenance** — netbird updates on the
+  per-site JetKVM consoles (`playbooks/jetkvm-netbird-update.yml`, the
+  `oob_kvm` inventory group); see `docs/jetkvm-provisioning.md` for the
+  bring-up procedure.
 
 ## Prerequisites
 
@@ -73,9 +78,12 @@ ansible/
   roles/               # nixos_freeipa_vm, freeipa_autopatch, freeipa_metrics,
                         # freeipa_rsyslog, unifi_network_dns_record,
                         # unifi_network_dhcp_pxe, unifi_network_port_forward
-  playbooks/           # entry points, one per role/role-group
-  inventory.yml        # nas_nixos + ipa_replicas (+ site_* groups)
+  playbooks/           # entry points, one per role/role-group, plus
+                        # jetkvm-netbird-update.yml
+  inventory.yml        # nas_nixos + ipa_replicas + oob_kvm (+ site_* groups)
   host_vars/, group_vars/
+docs/
+  jetkvm-provisioning.md  # JetKVM OOB console bring-up procedure
 ```
 
 ## State backend

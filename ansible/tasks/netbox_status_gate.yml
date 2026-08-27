@@ -1,0 +1,50 @@
+# tasks/netbox_status_gate.yml — shared reachability gate for any playbook
+# targeting NetBox-sourced hosts (netbox_inventory.yml).
+#
+# NetBox's device `status` is the only signal available BEFORE a play tries
+# to connect — and under `serial: 1` (or plain per-host execution) without
+# `any_errors_fatal`, an unreachable host doesn't abort the run, it just
+# fails loudly on that host's very first connecting task, every single
+# time. That's noisy enough to bury a real new failure among expected,
+# known-offline noise (e.g. a whole site down). This gate skips any host
+# whose status NetBox doesn't currently consider reachable, cleanly, before
+# any connection is attempted.
+#
+# Allowlist, not denylist, on purpose: only `active`/`staged` mean NetBox
+# expects the box to answer. Any other or future status value (`planned`,
+# `failed`, `inventory`, `decommissioning`, or something NetBox adds later)
+# defaults to skipped, never targeted by accident.
+#
+# `status` arrives as the nested NetBox API {value, label} dict in host
+# vars, not a flat string, even with netbox_inventory.yml's
+# `plurals: false` — verified live via `ansible-inventory --host` against
+# real oob_kvm/nas_nixos/ipa_replicas hosts, 2026-08-27 (see that file's
+# corrected `plurals:` comment). Hence `status.value` below, not `status`.
+#
+# `status is defined` guards every playbook here's static-inventory
+# fallback (`inventory.yml` / `ansible:run-static` / `ansible-playbook -i
+# inventory.yml ...`, each playbook's own doc'd NetBox-is-down escape
+# hatch): host_vars/group_vars under the static inventory carry no
+# `status` field at all, so without this guard the gate would hard-error
+# ("'status' is undefined") on every static-inventory run instead of just
+# leaving pre-gate behavior (always targeted) alone. Only skip when NetBox
+# actually said something.
+#
+# Include via `ansible.builtin.import_tasks` from `pre_tasks:`, e.g.:
+#   pre_tasks:
+#     - ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
+#
+# IMPORTANT — gather_facts ordering: Ansible's implicit "Gathering Facts"
+# task (whenever a play sets `gather_facts: true`, including the default)
+# runs BEFORE `pre_tasks`, which would connect to a skip-worthy host before
+# this gate ever gets a chance to run. Any play including this file MUST
+# set `gather_facts: false` and, if it genuinely needs facts, gather them
+# explicitly via `ansible.builtin.setup` in a task placed AFTER this
+# include (see nixos-freeipa-vm.yml for the pattern) rather than relying on
+# the play-level `gather_facts: true` shortcut.
+---
+- name: Skip hosts NetBox doesn't consider reachable (only active/staged are expected up)
+  when:
+    - status is defined
+    - status.value not in ['active', 'staged']
+  ansible.builtin.meta: end_host

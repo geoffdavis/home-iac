@@ -1,0 +1,141 @@
+---
+# reconcile_one.yml -- create or update one netbox-dns Record object.
+# Called in a loop from main.yml; loop_var is `_nb_dns_record`, a dict
+# with zone (id), type, name (relative to the zone), value, ttl
+# (int or null), status, description.
+#
+# Identity: zone + type + name together. Confirmed live 2026-08-26 that
+# GET /api/plugins/netbox-dns/records/?zone_id=<id>&type=<type>&name=<name>
+# filters correctly on all three. netbox-dns does allow more than one
+# Record with the same name+type in principle (e.g. round-robin A
+# records) -- nas-sdg's static-DNS list has no such duplicates today, so
+# "first match" is safe here, but this is worth knowing if this role is
+# ever pointed at a host whose list does have them.
+#
+# status shape: unlike Task 2's ipam.IPAddress (whose `status` GET field
+# is a nested {value,label} choice object -- see
+# netbox_import_udm_state/tasks/reconcile_one.yml), netbox-dns's Record
+# `status` serializes as a plain string ("active") on both GET and
+# POST/PATCH -- confirmed live 2026-08-26 the hard way, when the first
+# real run's second (idempotent) pass crashed on
+# `_nb_dns_match[0].status.value` ('str' object has no attribute
+# 'value'). Compare `_nb_dns_match[0].status` directly, no `.value`.
+#
+# Never deletes -- this role only ever POSTs or PATCHes.
+
+- name: "GET existing netbox-dns Record -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.uri:
+    url: >-
+      {{ netbox_import_udm_dns_records_netbox_url }}/api/plugins/netbox-dns/records/?zone_id={{ _nb_dns_record.zone }}&type={{ _nb_dns_record.type }}&name={{ _nb_dns_record.name | urlencode }}
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _nb_dns_netbox_token }}"
+      Host: "{{ netbox_import_udm_dns_records_netbox_host_header }}"
+    validate_certs: true
+    status_code: 200
+    return_content: true
+  register: _nb_dns_existing
+  delegate_to: localhost
+  become: false
+  no_log: true
+  check_mode: false
+
+- name: "Compute desired vs. current -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.set_fact:
+    _nb_dns_match: "{{ _nb_dns_existing.json.results }}"
+    _nb_dns_desired_fields:
+      value: "{{ _nb_dns_record.value }}"
+      ttl: "{{ _nb_dns_record.ttl }}"
+      status: "{{ _nb_dns_record.status }}"
+      description: "{{ _nb_dns_record.description }}"
+
+- name: "Debug -- current vs desired -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.debug:
+    msg:
+      - "zone: {{ _nb_dns_record.zone }}  type: {{ _nb_dns_record.type }}  name: {{ _nb_dns_record.name }}"
+      - "exists: {{ _nb_dns_match | length > 0 }}"
+      - "desired: {{ _nb_dns_desired_fields }}"
+      - >-
+        current:
+        {{
+          {} if _nb_dns_match | length == 0 else {
+            'value': _nb_dns_match[0].value,
+            'ttl': _nb_dns_match[0].ttl,
+            'status': _nb_dns_match[0].status,
+            'description': _nb_dns_match[0].description,
+          }
+        }}
+
+# --- not found -> POST (create) ---
+- name: "POST (create) -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_dns_records_netbox_url }}/api/plugins/netbox-dns/records/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _nb_dns_netbox_token }}"
+      Host: "{{ netbox_import_udm_dns_records_netbox_host_header }}"
+    body_format: json
+    body:
+      zone: "{{ _nb_dns_record.zone }}"
+      type: "{{ _nb_dns_record.type }}"
+      name: "{{ _nb_dns_record.name }}"
+      value: "{{ _nb_dns_desired_fields.value }}"
+      ttl: "{{ _nb_dns_desired_fields.ttl }}"
+      status: "{{ _nb_dns_desired_fields.status }}"
+      description: "{{ _nb_dns_desired_fields.description }}"
+    validate_certs: true
+    status_code: 201
+    return_content: true
+  register: _nb_dns_create_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: _nb_dns_match | length == 0
+
+- name: "Assert POST succeeded -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.assert:
+    that:
+      - _nb_dns_create_result.json.id is defined
+    fail_msg: >-
+      netbox-dns Record POST for '{{ _nb_dns_record.type }} {{ _nb_dns_record.name }}'
+      returned no id: {{ _nb_dns_create_result.json | default(_nb_dns_create_result.content | default('(no body)')) }}
+  when:
+    - _nb_dns_match | length == 0
+    - not ansible_check_mode
+
+# --- found + drift -> PATCH (update) ---
+- name: "PATCH (update) -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_dns_records_netbox_url }}/api/plugins/netbox-dns/records/{{ _nb_dns_match[0].id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ _nb_dns_netbox_token }}"
+      Host: "{{ netbox_import_udm_dns_records_netbox_host_header }}"
+    body_format: json
+    body: "{{ _nb_dns_desired_fields }}"
+    validate_certs: true
+    status_code: 200
+    return_content: true
+  register: _nb_dns_update_result
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - _nb_dns_match | length > 0
+    - (_nb_dns_match[0].value != _nb_dns_desired_fields.value)
+      or (_nb_dns_match[0].ttl != _nb_dns_desired_fields.ttl)
+      or (_nb_dns_match[0].status != _nb_dns_desired_fields.status)
+      or (_nb_dns_match[0].description != _nb_dns_desired_fields.description)
+
+- name: "Assert PATCH succeeded -- {{ _nb_dns_record.type }} {{ _nb_dns_record.name }}"
+  ansible.builtin.assert:
+    that:
+      - _nb_dns_update_result.json.id is defined
+    fail_msg: >-
+      netbox-dns Record PATCH for '{{ _nb_dns_record.type }} {{ _nb_dns_record.name }}'
+      returned no id: {{ _nb_dns_update_result.json | default(_nb_dns_update_result.content | default('(no body)')) }}
+  when:
+    - _nb_dns_update_result is not skipped
+    - not ansible_check_mode

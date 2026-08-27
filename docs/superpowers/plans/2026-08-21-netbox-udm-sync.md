@@ -177,6 +177,66 @@ Blocked on Task 1 and on geoffdavis/nix-personal#542 (NetBox running).
 - [ ] **Step 9: Update the README.**
 - [ ] **Step 10: Commit.**
 
+**Superseded post-Task-8 (2026-08-26):** Steps 1-10 above shipped in PR
+#16 against `ipam.IPAddress.dns_name` — the spec's documented fallback,
+used only because `netbox-dns` wasn't installed yet at implementation
+time (confirmed live 2026-08-24: `GET /api/status/` → `"plugins":{}`).
+That fallback carried a real, always-known limitation: A/AAAA only, so
+it structurally could not represent nas-sdg's CNAME (`syslog`), its
+three wildcards (`*.nas`/`*.admin`/`*.media`), or the split-horizon
+`nas`/`admin` pair pointing at the netbird overlay address
+(`100.92.233.103`, no IPAM presence) — all five showed up as orphans in
+PR #16's original live dry run, logged but never recreated. Task 8
+installed `netbox-dns`, created the `home.geoffdavis.com` Zone, and
+backfilled all of nas-sdg's static-DNS records into `Record` objects
+(Task 8 Steps 1-3) — once that data existed, PR #16 was reworked in
+place (not superseded by a new PR) to read from `netbox-dns`'s `Record`
+objects instead of `ipam.IPAddress` (Task 8 Steps 4-7):
+
+- `unifi_network_dns_record_netbox_records_endpoint` now points at
+  `/api/plugins/netbox-dns/records/`, zone-filtered by an id resolved
+  live from `unifi_network_dns_record_managed_zone_suffix` (a name
+  lookup, not a hardcoded id — see the "Resolve netbox-dns zone id"
+  task in `tasks/main.yml`).
+- `netbox_ipaddress_dns_records_to_udm` (`filter_plugins/netbox_sync.py`)
+  is gone; `netbox_dns_records_to_udm` replaces it, transforming a
+  `Record`'s `fqdn` (real, server-computed, trailing-dot — used
+  directly, not reconstructed from `name` + zone suffix), `value`
+  (trailing dot stripped for name-shaped types), `status` (a **plain
+  string**, not the nested `{value, label}` shape `ipam.IPAddress`
+  used — the same bug `netbox_import_udm_dns_records`'s write path hit
+  live), and `managed` (skips the zone's own auto-generated SOA/apex-NS
+  bookkeeping records, which have no UDM static-DNS equivalent).
+- Credentials: the existing read-only `netbox-ansible-inventory-token`
+  (already this role's configured token, originally scoped for the
+  dynamic-inventory plugin's `ipam`/`dcim`/`virtualization` needs) was
+  live-verified to also have read access to `netbox_dns.*` object
+  types — confirmed with a direct `GET
+  /api/plugins/netbox-dns/records/` before trusting it, rather than
+  assuming either that token or the separate write-scoped `ansible`
+  service-account token (Task 8's status note) was the right one. No
+  new token needed.
+- Live `--check --diff` against nas-sdg (2026-08-26, after the rework):
+  `changed=0`, **zero orphans** — the syslog CNAME, all three
+  wildcards, and the split-horizon `nas`/`admin` pair all show
+  `exists: True, needs_update: False` (matched), where PR #16's
+  original dry run had logged them as orphans. `ipa.geoffdavis.com`
+  (a different zone, FreeIPA's own — explicitly skip-listed by the
+  Task 8 Step 3 backfill) correctly never enters this sync's view at
+  all, since it falls outside `unifi_network_dns_record_managed_zone_suffix`.
+- Unit tests (`ansible/tests/unit/test_netbox_sync_filters.py`) were
+  rewritten to match: the `ipam.IPAddress`-shaped transform tests are
+  gone, replaced with `netbox_dns_records_to_udm` coverage for a plain
+  A record, a CNAME (trailing-dot stripping), a wildcard (trusting
+  `fqdn` rather than re-deriving it), the `status`-as-plain-string case
+  specifically (the exact shape of bug this rework needs to not
+  reintroduce), `managed` records being skipped, and the zone-apex
+  `"@"` case.
+- Deliberately **not done here**: flipping nas-sdg's `host_vars` to
+  `unifi_network_dns_record_source: netbox` (Task 8 Step 8) — that
+  cutover is still a separate, deliberate decision, not a side effect
+  of this rework landing.
+
 ### Task 4: First real NetBox-sourced write (Gate G4)
 
 Same procedure as the original plan: change one low-risk record in
@@ -237,7 +297,11 @@ syncs cleanly too.
 
 - [ ] Confirm no `host_vars/*.yml` still sets
   `unifi_network_dns_record_records`, remove the var and the
-  short-circuit, commit.
+  short-circuit, commit. **Blocked for any host whose static list has a
+  CNAME, NS, wildcard, or non-NetBox-tracked-IP record (nas-sdg, today)
+  until Task 8 lands** — see that task for why the `ipam.IPAddress`
+  fallback can't represent them, so those hosts can drop the escape
+  hatch only after their records have a home in netbox-dns.
 
 ### Task 7: Schedule the sync (Gate G6)
 
@@ -246,14 +310,255 @@ syncs cleanly too.
   Update the operator runbook: DNS/reservation edits happen in NetBox now,
   not the UDM UI and not `host_vars`. Commit.
 
+### Task 8: Install netbox-dns, migrate DNS records to a full record model (Gate G7)
+
+**Files:** nix-personal (plugin install/config — separate repo, separate
+PR, not tracked here); create
+`ansible/roles/netbox_import_udm_dns_records/` (or extend Task 2's
+`netbox_import_udm_state`); modify `ansible/filter_plugins/netbox_sync.py`,
+`ansible/roles/unifi_network_dns_record/{tasks/main.yml,
+tasks/netbox_fetch_page.yml, defaults/main.yml, README.md}`.
+
+Surfaced during Task 3's live verification (PR #16, live `--check --diff`
+against nas-sdg): the `ipam.IPAddress.dns_name` fallback Task 3 shipped is
+A/AAAA-only, and structurally can't represent a CNAME or NS record, a
+wildcard (`*.`) name, or any record whose value isn't itself a
+NetBox-tracked IP address. Real, currently-live records on nas-sdg that
+fall in this gap: `syslog.home.geoffdavis.com` (CNAME),
+`ipa.geoffdavis.com` (NS), `*.nas`/`*.admin`/`*.media.home.geoffdavis.com`
+(wildcards), and the split-horizon `nas.home.geoffdavis.com` /
+`admin.home.geoffdavis.com` pair (A records pointing at the netbird
+overlay IP `100.92.233.103`, which NetBox's IPAM has no reason to ever
+track). A host left on `unifi_network_dns_record_source: netbox` today
+stops actively managing these — they're logged as orphans, never
+recreated if deleted — which is why Task 3 kept `static` as the default
+rather than cutting nas-sdg over.
+
+netbox-dns models DNS records as first-class `Record` objects (Zone +
+Record, arbitrary `type`, arbitrary string `value` — not derived from
+`ipam.IPAddress`), which removes all three limitations at once. This was
+always the design spec's stated preference (Open Questions: source from
+the plugin directly if installed; `ipam.IPAddress` was explicitly the
+fallback) — Task 3 used the fallback only because the plugin wasn't
+installed at implementation time, confirmed live via `GET /api/status/`
+returning `"plugins":{}` on 2026-08-24.
+
+**Status: plugin install (Step 1) done.** Confirmed live 2026-08-26 via
+`GET /api/status/`: `"plugins": {"netbox_bgp": "0.19.0", "netbox_dns":
+"1.5.11"}`. `netbox-bgp` came along with the same effort but is out of
+scope for this task. The plugin's REST surface is up
+(`/api/plugins/netbox-dns/{zones,records,nameservers,views,
+registrars,contacts,prefixes,...}/`); `zones` count is currently 0 — Step
+2 hasn't happened yet. The read-only token this repo already has
+(`netbox-ansible-inventory-token`) can't show the POST schema for these
+endpoints (DRF only includes it for a token with add permission), so
+Step 3's write-scoped-token question — reuse Task 2's
+`netbox-udm-import-token` (unconfirmed whether its permissions cover
+netbox-dns's object types, since it was originally scoped for
+`ipam.IPAddress`) vs. mint a new one — resolved: neither
+`netbox-udm-import-token` nor `netbox-ansible-inventory-token` is the
+write credential in use initially. A separate token, 1Password
+`op://nas-overlay/netbox-geoff-token/token`, had full write access
+(tied to `geoff`'s own superuser account) and is what Step 2 actually
+used to create the Zone/View/NameServer.
+
+**Since resolved properly**, per the user's request that agentic edits
+be attributable separately from their own: created a dedicated NetBox
+user `ansible` (id 4, local account — not LDAP-bound, which is fine
+since DRF `TokenAuthentication` looks up the Token row directly and
+never goes through the LDAP login/bind flow), an `ObjectPermission`
+(`ansible-netbox-dns-write`, id 1) scoped to
+`view`/`add`/`change` on `netbox_dns.{view,nameserver,zone,record}`
+only, and a token for that user/permission pair. Stored at 1Password
+`op://nas-overlay/netbox-ansible-service-account/credential` (vault
+`nas-overlay`). **Live-verified 2026-08-26**: succeeds on
+`netbox_dns` reads/writes, 403s on `ipam.ipaddress` and `users` (proof
+the scoping is actually restrictive, not just additive) — deliberately
+excludes `delete`, matching this sync's "never auto-delete, only log
+orphans" principle elsewhere.
+
+Two non-obvious things worth keeping in institutional memory:
+- `POST /api/users/tokens/` returns the secret split across TWO fields
+  (`key`, a 12-char id matching the `display` field, and `token`, the
+  secret suffix) — neither works alone as a Bearer value. The complete
+  credential is the concatenation `"nbt_" + key + "." + token`. Cost two
+  failed rotations to work out live.
+- `netbox-udm-import-token` (Task 2) and `netbox-ansible-inventory-token`
+  (dynamic inventory, PR #13) still run under `geoff`/`admin`, not this
+  new `ansible` account — migrating them is a separate, more invasive
+  change (both are already live/merged) and deliberately out of scope
+  here.
+
+- [x] **Step 1: Install and configure the netbox-dns plugin** on
+  nas-sdg's NetBox instance (nix-personal, `hosts/nas-sdg/apps/netbox.nix`)
+  — done, confirmed live 2026-08-26 (`netbox_dns` 1.5.11).
+- [x] **Step 2: Create the `home.geoffdavis.com` Zone.** Done
+  2026-08-26 via `op://nas-overlay/netbox-geoff-token/token`:
+  - View `Internal` (id 2) — the LAN-only split-horizon perspective;
+    the public `home.geoffdavis.com` apex is a single CNAME to dynamic
+    DNS at the registrar, deliberately not modeled here (out of scope
+    for this sync, which only ever writes to the UDM).
+  - NameServer `unifi.home.geoffdavis.com.` (id 1) — bookkeeping only;
+    nothing queries it as a real NS, since the UDM (not netbox-dns)
+    answers LAN queries.
+  - Zone `home.geoffdavis.com` (id 1), `view=Internal`, `status=active`,
+    `soa_serial_auto=true`, conventional SOA timers
+    (refresh/retry/expire/minimum = 172800/7200/2419200/3600 — no
+    fleet-wide defaults exist, confirmed via
+    `hosts/nas-sdg/apps/netbox-plugins.py`'s empty `PLUGINS_CONFIG`).
+  - Checked: nas-sdg is the *only* host with `unifi_network_dns_record_records`
+    set (`grep -rl unifi_network_dns_record_records ansible/host_vars/`),
+    so no other host contributes a second apex. One nuance within
+    nas-sdg's own list, though: the `ipa.geoffdavis.com` NS record is a
+    genuinely different zone from `home.geoffdavis.com`, not a
+    subdomain of it — and its value (`172.29.50.21`, an IP) is an odd
+    shape for an NS record's target regardless. Likely a legacy
+    delegation pointer to the FreeIPA VM (see the role README's
+    `playbooks/freeipa-dns-records.yml` cross-reference) rather than
+    something this sync should model as a `home.geoffdavis.com` A/CNAME
+    peer. Step 3 needs to explicitly decide: skip it (FreeIPA's own DNS
+    already owns that zone) or give it a real second Zone — don't let it
+    silently fall into whatever `home.geoffdavis.com`-shaped bucket the
+    backfill script defaults to.
+- [x] **Step 3: One-shot backfill role**
+  (`netbox_import_udm_dns_records`, or extend Task 2's
+  `netbox_import_udm_state`) — same shape as Task 2: GET the UDM's
+  current static-DNS list, create/update the matching netbox-dns
+  `Record` object for each, using a write-scoped token separate from the
+  ongoing-sync's read-only one (same separation rule as Task 2 Step 1).
+  Covers every record type, not just A/AAAA — including the ones Task
+  2's original backfill couldn't represent. **Done, run live
+  2026-08-26.** Built as a new role,
+  `ansible/roles/netbox_import_udm_dns_records/` — kept separate from
+  `netbox_import_udm_state` rather than extended, because the two write
+  to genuinely different NetBox object types (`ipam.IPAddress` vs.
+  `plugins.netbox_dns.Record`) with different identity semantics
+  (CIDR-string address vs. zone+type+name); see the new role's README
+  "Why a second backfill role" section for the full reasoning. Added as
+  a second play in `playbooks/netbox-import.yml`
+  (`--tags dns-records` scopes a run to just this role).
+
+  **Empirical `name`/`fqdn` finding** (verified live before writing any
+  transform logic, per this step's own requirement): one real test
+  `Record` of each of A, wildcard-A, and CNAME was POSTed directly via
+  the API, inspected, and deleted before the role was written.
+  `name` is the record's bare label **relative to the zone** (e.g.
+  `"syslog"`, `"*.nas"`), never the full FQDN; `fqdn` is a read-only,
+  server-computed field (`"syslog.home.geoffdavis.com."`). A wildcard is
+  expressed with the literal `*` character in the relative label
+  (`"*.nas"`), exactly like the UDM's own convention — no special
+  encoding needed. A CNAME's `value` wants a trailing-dot, fully
+  qualified target; the UDM's own `value` has no trailing dot, so the
+  role appends one for any name-shaped value (`CNAME`/`NS`/`MX`).
+  `ttl: null` is valid and means "inherit the zone's `default_ttl`" —
+  confirmed on the zone's own auto-managed NS record — so UDM's
+  `ttl: 0` ("Auto", not a literal 0-second TTL) maps to netbox-dns
+  `ttl: null`.
+
+  **A second, unplanned empirical finding, caught live on the
+  idempotency check**: unlike `ipam.IPAddress`'s `status` field (a
+  nested `{value, label}` choice object — see
+  `netbox_import_udm_state/tasks/reconcile_one.yml`), netbox-dns
+  `Record.status` serializes as a **plain string** (`"active"`) on both
+  GET and POST/PATCH. The role's first draft copied Task 2's
+  `.status.value` pattern by assumption rather than by verifying this
+  specific field, and the real run's second (idempotent) pass crashed on
+  it (`'str' object has no attribute 'value'`) — fixed by comparing
+  `status` directly. Left in as a reminder that "verify empirically"
+  applies per-field, not just to the one shape question this step
+  called out in advance.
+
+  **What got imported**: 13 records, live-verified byte-for-byte against
+  the UDM's static-DNS list via direct API comparison (all 13, not just
+  a sample) — 1 `CNAME` (`syslog`) and 12 `A` records, including both
+  wildcards (`*.nas`, `*.admin`) plus `*.media`, the split-horizon
+  `nas`/`admin` pair pointing at the netbird overlay address
+  `100.92.233.103` (no IPAM presence, none needed), `media`/
+  `homeassistant.media`/`k8s`, and four `.mgmt` host aliases
+  (`nas-sdg`, `tourmaline`, `pacificbeach`, and `netbox` — the last two
+  not in `host_vars/nas-sdg.yml`'s declared list at all, added directly
+  on the live UDM after Task 1's capture; a reminder the UDM, not
+  `host_vars`, is this role's actual source of truth, same as Task 2).
+  **Excluded, explicitly and by trace** (8 records): `ipa.geoffdavis.com`
+  (NS, different zone — FreeIPA's own) and
+  `pottedpork-hassio.duckdns.org` (A, different domain entirely) by
+  exact-key skip list; `website-dev.k8s`, `website-prod.k8s`,
+  `hubble.k8s` (all → `172.29.55.0`, the Cilium LB pool's network
+  address) plus their three `_externaldns.a-*` TXT ownership markers, by
+  the same external-dns ownership filter Task 2's backfill already
+  established. A second, idempotent re-run confirmed `changed=0` across
+  all 13.
+
+  **Known loose end**: the three real API test records created during
+  the empirical shape check (`backfill-shape-test`,
+  `*.nas-backfill-shape-test`, `backfill-cname-test`) could not be
+  auto-deleted — the sandbox this step was implemented under blocks any
+  `DELETE` issued with the elevated NetBox credential required (the
+  `ansible` service account's token deliberately cannot delete at all).
+  They still exist in the zone as of this commit and need a human to
+  remove them by hand (obviously named as test artifacts; harmless, and
+  outside this role's own desired-state list either way).
+- [x] **Step 4: Revive `netbox_dns_records_to_udm`** — the plugin-shaped
+  transform PR #9 originally wrote and unit-tested, deliberately dropped
+  from PR #16 when the plugin was confirmed absent. Re-adapt it against
+  netbox-dns's actual live API shape rather than assuming PR #9's
+  version is still correct — verify field/endpoint names against the
+  real, now-installed plugin. This is the same live-verify-before-trust
+  discipline that caught two real bugs in the `ipam.IPAddress` fallback
+  during Task 3 (a pagination `None` crash and a mis-decoded
+  external-dns TXT-ownership key format) — assume this plugin's actual
+  shape has its own surprises too. **Done 2026-08-26** — see the Task 3
+  "Superseded post-Task-8" note above for the full empirical findings
+  and the resulting `netbox_dns_records_to_udm` function
+  (`filter_plugins/netbox_sync.py`); PR #9's original version was not
+  reused verbatim, since `fqdn`/`status`/`managed`'s real shapes needed
+  independent live confirmation.
+- [x] **Step 5: Point the role's NetBox records endpoint at netbox-dns**
+  instead of `ipam/ip-addresses/`. Keep `unifi_network_dns_record_source`
+  as the mode switch (`static` / `netbox`) — this changes what "netbox
+  mode" fetches, not the role's external interface. **Done** — plus the
+  target zone is now resolved by name to an id live (not hardcoded),
+  see the Task 3 note above.
+- [x] **Step 6: `--check` against the backfilled netbox-dns data,
+  confirm zero diffs across every record type this fleet actually has**
+  (CNAME, NS, wildcard, split-horizon A) — not just the A/AAAA subset
+  Task 3's Gate G3 covered. **Done 2026-08-26**, `changed=0`, zero
+  orphans — A, CNAME, wildcard, and split-horizon all confirmed live
+  (see the Task 3 note above for the exact records). **NS not actually
+  exercised**: nas-sdg's only NS record (`ipa.geoffdavis.com`) is a
+  different zone entirely (FreeIPA's own — see Task 8 Step 2's note)
+  and was explicitly skip-listed by the Step 3 backfill rather than
+  imported into `home.geoffdavis.com`, so there is no live NS record in
+  netbox-dns for this gate to have exercised. The transform handles NS
+  the same as CNAME/MX (trailing-dot stripping) by construction, but
+  that path is unit-tested only, not live-verified, for this record
+  type specifically.
+- [x] **Step 7: Update the README's "Why `ipam.IPAddress`, not a
+  DNS-record object" section** — no longer true once this lands; replace
+  with the netbox-dns data model description. **Done** —
+  `ansible/roles/unifi_network_dns_record/README.md`.
+- [ ] **Step 8: Flip nas-sdg's `host_vars` to `unifi_network_dns_record_source: netbox`**
+  now that its CNAME/NS/wildcard/split-horizon records have a home —
+  this is what actually unblocks Task 6 for this host. Side benefit,
+  confirmed in Task 3's dry run: this also resolves a latent conflict
+  where the static list's `website-dev.k8s`/`website-prod.k8s` entries
+  point at the wrong address (the LB pool's network address, not a real
+  host) — netbox mode excludes both as external-dns-owned instead of
+  fighting the live Kubernetes reconciliation every run. **Deliberately
+  not done in this same change** — a separate, deliberate cutover
+  decision, not a side effect of Steps 4-7 landing.
+- [x] **Step 9: Commit.** PR #16, reworked in place (rebased onto
+  current `main`, force-pushed).
+
 ---
 
 ## Definition of done
 
 - [ ] Task 1's migration merged as its own reviewable unit, verified
   behavior-identical to `ugreen-nas-compose` before any rewrite started.
-- [ ] All gates G2–G6 passed.
-- [ ] Escape hatch removed (Task 6).
+- [ ] All gates G2–G7 passed.
+- [ ] Escape hatch removed (Task 6) for every host, including the ones
+  that needed Task 8's full record model first.
 - [ ] Sync runs on a schedule (Task 7).
 - [ ] `README.md` reflects the repo's real, two-platform scope.
 - [ ] Lint passes (OpenTofu + the new ansible-lint hook).

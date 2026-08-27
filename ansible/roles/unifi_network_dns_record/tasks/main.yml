@@ -3,19 +3,39 @@
 # against the UDM Pro / UniFi Network controller's v2 REST API.
 #
 # Flow:
-#   1. Pre-flight assert: records list is non-empty and well-formed
+#   1. Pre-flight assert: source is valid; for source=static, records
+#      list is non-empty and well-formed
 #   2. Resolve admin creds from 1Password
 #   3. Authenticate (POST /api/auth/login → cookie + X-CSRF-Token)
 #   4. GET /v2/api/site/<site>/static-dns (all existing records —
 #      NOTE: bare JSON array, no v1 {data: [...]} envelope)
-#   5. For each record in unifi_network_dns_record_records:
+#   5. Build the desired-record list (set A):
+#        - source=static: unifi_network_dns_record_records, unchanged —
+#          same one-directional walk this role has always used, absent
+#          entries are explicit deletes
+#        - source=netbox: fetch netbox-dns Record objects (the target
+#          zone resolved by name to an id first), transform, then a
+#          full symmetric set comparison against current UDM state (set
+#          B) — both zone-filtered and external-dns-owned names
+#          excluded from each side first. Anything in set B but not set
+#          A is an orphan: logged loudly, never deleted (design doc:
+#          "Sync direction and idempotency" + "Ownership filter").
+#   6. For each record in the desired-record list:
 #        - state=present: POST (create) or PUT (update on drift)
 #        - state=absent:  DELETE if found, no-op if already absent
-#   6. Best-effort logout
+#   7. Best-effort logout
 
 - name: "Block — UniFi static-DNS reconciliation"
   when: unifi_network_dns_record_enabled | bool
   block:
+    - name: "Pre-flight — assert desired-state source is valid"
+      ansible.builtin.assert:
+        that:
+          - unifi_network_dns_record_source in ['static', 'netbox']
+        fail_msg: >-
+          unifi_network_dns_record_source must be 'static' or 'netbox',
+          got: {{ unifi_network_dns_record_source }}
+
     - name: "Pre-flight — assert records list is a non-empty list of mappings"
       ansible.builtin.assert:
         that:
@@ -29,6 +49,7 @@
         fail_msg: |
           unifi_network_dns_record_records must be a non-empty list of mappings,
           each with at least: record_type, key, value.
+      when: unifi_network_dns_record_source == 'static'
 
     - name: "Fetch UniFi admin credentials from 1Password"
       ansible.builtin.set_fact:
@@ -106,9 +127,156 @@
       no_log: true
       check_mode: false
 
+    # --- Build the desired-record list (set A) --------------------------
+    #
+    # source=static: unchanged — unifi_network_dns_record_records, as-is,
+    # no filtering. This is the role's original behavior; state=absent
+    # entries are the explicit-delete mechanism and were never meant to
+    # go through a symmetric set comparison.
+    - name: "Desired records — static source"
+      ansible.builtin.set_fact:
+        _udm_dns_desired_records: "{{ unifi_network_dns_record_records }}"
+      when: unifi_network_dns_record_source == 'static'
+
+    # source=netbox: fetch netbox-dns Record objects from NetBox,
+    # transform to the UDM record shape, then a full symmetric set
+    # comparison against current UDM state — NOT a one-directional walk
+    # over the fetched list, which would silently miss "in UDM, not in
+    # NetBox" orphans (design doc: "Sync direction and idempotency").
+    # Both sides are zone-filtered and external-dns-owned names excluded
+    # before the comparison, so this sync can never touch a
+    # Kubernetes-owned name even on a key+type collision (design doc:
+    # "Ownership filter").
+    - name: "Fetch NetBox API token from 1Password"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_token: >-
+          {{ lookup('community.general.onepassword',
+                    unifi_network_dns_record_netbox_token_op_item,
+                    vault=unifi_network_dns_record_netbox_token_op_vault,
+                    field=unifi_network_dns_record_netbox_token_op_field) }}
+      no_log: true
+      delegate_to: localhost
+      become: false
+      when: unifi_network_dns_record_source == 'netbox'
+
+    # Resolve the netbox-dns zone by NAME rather than hardcoding its id
+    # (unlike netbox_import_udm_dns_records's defaults, which hardcode
+    # zone id 1 for the one-shot backfill) — this is the ongoing sync,
+    # so a portable-by-name lookup here means pointing a second host at
+    # a second zone never requires hunting up its numeric id by hand.
+    # Live-verified 2026-08-26: GET .../zones/?name=<name> filters
+    # correctly and returns exactly one match for a real zone name.
+    - name: "Resolve netbox-dns zone id by name"
+      ansible.builtin.uri:
+        url: >-
+          {{ unifi_network_dns_record_netbox_url }}/api/plugins/netbox-dns/zones/?name={{ unifi_network_dns_record_managed_zone_suffix | urlencode }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _udm_dns_netbox_token }}"
+          Host: "{{ unifi_network_dns_record_netbox_host_header }}"
+        validate_certs: "{{ unifi_network_dns_record_netbox_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _udm_dns_netbox_zone_lookup
+      delegate_to: localhost
+      become: false
+      no_log: true
+      check_mode: false
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Assert exactly one netbox-dns zone matched"
+      ansible.builtin.assert:
+        that:
+          - _udm_dns_netbox_zone_lookup.json.count == 1
+        fail_msg: >-
+          Expected exactly one netbox-dns Zone named
+          '{{ unifi_network_dns_record_managed_zone_suffix }}', got
+          {{ _udm_dns_netbox_zone_lookup.json.count | default('?') }}.
+          Check that the zone exists (plan Task 8 Step 2) and that
+          unifi_network_dns_record_managed_zone_suffix matches its name
+          exactly.
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Capture resolved netbox-dns zone id"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_zone_id: "{{ _udm_dns_netbox_zone_lookup.json.results[0].id }}"
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Initialize NetBox pagination state"
+      ansible.builtin.set_fact:
+        _udm_dns_netbox_results: []
+        _udm_dns_netbox_next_url: >-
+          {{ unifi_network_dns_record_netbox_url
+             ~ unifi_network_dns_record_netbox_records_endpoint
+             ~ '?zone_id=' ~ _udm_dns_netbox_zone_id
+             ~ '&limit='
+             ~ unifi_network_dns_record_netbox_page_limit }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Fetch all NetBox DNS-record pages"
+      ansible.builtin.include_tasks: netbox_fetch_page.yml
+      loop: "{{ range(0, unifi_network_dns_record_netbox_max_pages) | list }}"
+      loop_control:
+        loop_var: _udm_dns_netbox_page_num
+        label: "page {{ _udm_dns_netbox_page_num }}"
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Assert NetBox pagination terminated (didn't hit the page cap)"
+      ansible.builtin.assert:
+        that:
+          - _udm_dns_netbox_next_url | length == 0
+        fail_msg: >-
+          NetBox records pagination hit
+          unifi_network_dns_record_netbox_max_pages
+          ({{ unifi_network_dns_record_netbox_max_pages }}) without
+          exhausting results — raise the cap.
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Compute external-dns owned keys (excluded from both sets)"
+      ansible.builtin.set_fact:
+        _udm_dns_owned_keys: >-
+          {{ _udm_dns_existing.json
+             | dns_external_dns_owned_keys(unifi_network_dns_record_external_dns_heritage_marker) }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Compute set A (NetBox-desired, zone-filtered, owned-excluded)"
+      ansible.builtin.set_fact:
+        _udm_dns_desired_records: >-
+          {{ (_udm_dns_netbox_results | netbox_dns_records_to_udm
+              | dns_in_zone(unifi_network_dns_record_managed_zone_suffix))
+             | dns_exclude_owned(_udm_dns_owned_keys) }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Compute set B (current UDM, zone-filtered, owned-excluded)"
+      ansible.builtin.set_fact:
+        _udm_dns_current_in_scope: >-
+          {{ (_udm_dns_existing.json
+              | dns_in_zone(unifi_network_dns_record_managed_zone_suffix))
+             | dns_exclude_owned(_udm_dns_owned_keys) }}
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Compute orphans (in UDM, not in NetBox — never auto-deleted)"
+      ansible.builtin.set_fact:
+        _udm_dns_orphans: "{{ _udm_dns_current_in_scope | dns_orphans(_udm_dns_desired_records) }}"
+      when: unifi_network_dns_record_source == 'netbox'
+
+    - name: "Log orphaned UDM static-DNS records (NetBox no longer desires these)"
+      ansible.builtin.debug:
+        msg: >-
+          ORPHAN static-DNS record on the UDM controller with no matching
+          NetBox ip-address: {{ _udm_dns_orphan.record_type }}
+          {{ _udm_dns_orphan.key }} -> {{ _udm_dns_orphan.value }}.
+          Not deleting — remove it manually on the controller, or in
+          NetBox with a matching dns_name, if it's genuinely stale.
+      loop: "{{ _udm_dns_orphans }}"
+      loop_control:
+        loop_var: _udm_dns_orphan
+        label: "{{ _udm_dns_orphan.record_type }} {{ _udm_dns_orphan.key }}"
+      when: unifi_network_dns_record_source == 'netbox'
+
     - name: "Reconcile each static DNS record"
       ansible.builtin.include_tasks: reconcile_one.yml
-      loop: "{{ unifi_network_dns_record_records }}"
+      loop: "{{ _udm_dns_desired_records }}"
       loop_control:
         loop_var: _udm_dns_record
         label: "{{ _udm_dns_record.record_type }} {{ _udm_dns_record.key }} ({{ _udm_dns_record.state | default('present') }})"

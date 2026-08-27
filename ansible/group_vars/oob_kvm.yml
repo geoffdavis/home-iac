@@ -1,0 +1,14 @@
+# group_vars/oob_kvm.yml — connection settings for the JetKVM OOB consoles.
+#
+# These are busybox devices on an armv7l SoC (they run the netbird
+# linux_armv6 build — no armv7 artifact exists), in dev mode: dropbear
+# sshd, root login via the op-Personal/op-ansible agent keys, NO python,
+# NO sftp-server.
+# Plays targeting this group must set `gather_facts: false` and use only
+# `raw` on-device (file transfer is cat-over-ssh from the control node —
+# copy/script/template all require an sftp/scp channel the device lacks).
+ansible_user: root
+
+# ~/.ssh/config pins *.netbird.cloud to the op-Personal key, which is in
+# each device's /userdata/dropbear/.ssh/authorized_keys — no explicit
+# private key needed here (unlike ipa_replicas, where the pin mismatches).
