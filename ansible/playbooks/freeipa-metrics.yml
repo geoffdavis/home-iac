@@ -7,10 +7,17 @@
 # Usage:
 #   cd ansible && uv run ansible-playbook -i inventory.yml \
 #     playbooks/freeipa-metrics.yml --private-key ~/.ssh/op-ansible-ssh-key.pub
+#
+# Skips any replica NetBox doesn't currently consider reachable (status
+# other than active/staged) before connecting — see
+# tasks/netbox_status_gate.yml.
 
 - name: FreeIPA replica metrics (node_exporter + ipa-healthcheck)
   hosts: ipa_replicas
   become: true
   gather_facts: false
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
   roles:
     - freeipa_metrics

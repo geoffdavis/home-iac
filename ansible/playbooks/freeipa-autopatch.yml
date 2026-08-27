@@ -20,9 +20,20 @@
 # NOTE: a `--limit` that targets a single replica only reconfigures that one;
 # the per-site reboot stagger is computed per host, so partial runs stay
 # correct.
+#
+# gather_facts: false (added alongside the reachability gate below) is not
+# a behavior change — the role uses no ansible_facts (only `ansible_managed`
+# in its templates, which needs no fact gathering), so the implicit
+# "Gathering Facts" task this play used to run was pure overhead, and it
+# runs BEFORE pre_tasks, which would have connected to a skip-worthy host
+# before the gate below ever got a chance to run.
 
 - name: Configure self-patching on the FreeIPA replica VMs
   hosts: ipa_replicas
   become: true
+  gather_facts: false
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
   roles:
     - freeipa_autopatch

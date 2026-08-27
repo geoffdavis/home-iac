@@ -7,10 +7,17 @@
 # Usage:
 #   cd ansible && uv run ansible-playbook -i inventory.yml \
 #     playbooks/freeipa-rsyslog.yml --private-key ~/.ssh/op-ansible-ssh-key.pub
+#
+# Skips any replica NetBox doesn't currently consider reachable (status
+# other than active/staged) before connecting — see
+# tasks/netbox_status_gate.yml.
 
 - name: FreeIPA replica syslog forwarding (rsyslog → fleet catcher) + UTC pin
   hosts: ipa_replicas
   become: true
   gather_facts: false
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
   roles:
     - freeipa_rsyslog

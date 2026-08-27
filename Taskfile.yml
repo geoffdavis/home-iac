@@ -96,6 +96,7 @@ tasks:
         playbooks/nixos-freeipa-vm.yml
         playbooks/unifi-network.yml
         playbooks/netbox-import.yml
+        playbooks/jetkvm-netbird-update.yml
 
   ansible:run:
     desc: >-
@@ -103,6 +104,11 @@ tasks:
       resolve via op run, matching this repo's Terraform convention.
       Usage: task ansible:run -- playbooks/unifi-network.yml [ansible-playbook args...]
       Add --check --diff for a dry run (e.g. against the live FreeIPA VM / UDM).
+      Covers oob_kvm / playbooks/jetkvm-netbird-update.yml too as of #29's
+      cutover (folded into PR #28) -- netbox_inventory.yml's
+      device_query_filters now include role=oob-management alongside
+      role=server, so the JetKVM consoles resolve here same as everything
+      else. Use ansible:run-static only as the NetBox-is-down fallback.
     dir: ansible
     cmds:
       # -i netbox_inventory.yml as of 2026-08-25 -- see that file's header
@@ -110,3 +116,19 @@ tasks:
       # caught. Fall back to `-i inventory.yml` (still present, not
       # deleted) if NetBox itself is ever the thing that's down.
       - op run --env-file ../.env -- ansible-playbook -i netbox_inventory.yml {{.CLI_ARGS}}
+
+  ansible:run-static:
+    desc: >-
+      Run a migrated playbook against real infrastructure via the static
+      inventory.yml, bypassing NetBox entirely. Kept as a fallback for when
+      NetBox itself is down (same convention as nas_nixos/ipa_replicas) --
+      not the primary path for any play as of #29's oob_kvm cutover into PR
+      #28: netbox_inventory.yml now resolves oob_kvm same as every other
+      group, so task ansible:run is the supported default for
+      jetkvm-netbird-update.yml too. inventory.yml/group_vars/oob_kvm.yml
+      stay in the repo, not yet deleted, matching how nas_nixos/ipa_replicas
+      are handled.
+      Usage: task ansible:run-static -- playbooks/jetkvm-netbird-update.yml --limit jetkvm-sdg-01 [ansible-playbook args...]
+    dir: ansible
+    cmds:
+      - op run --env-file ../.env -- ansible-playbook -i inventory.yml {{.CLI_ARGS}}

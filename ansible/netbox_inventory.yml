@@ -33,21 +33,45 @@
 # here doesn't depend on whatever happens to be on a given dev machine's
 # system Python -- not attempted here.
 #
-# Scope: role=server catches exactly the 6 hosts this repo's Ansible
-# targets today (nas-sdg/sct/cin devices + ipa-sdg/sct/cin VMs, all tagged
-# Server in NetBox) -- the UDM (Hogtied), switches, APs, cameras, Sonos,
-# Talos nodes, JetKVMs etc. are correctly excluded; none of them are ever
+# Scope: role=server catches the 6 nas-sdg/sct/cin devices + ipa-sdg/sct/cin
+# VMs (all tagged Server in NetBox); role=oob-management adds the 4 JetKVM
+# consoles (#29 -- the oob_kvm cutover, folded into PR #28 rather than done
+# as its own follow-up). Two `role:` entries in device_query_filters, not
+# one dict with two keys, on purpose: this plugin (refresh_url() in
+# nb_inventory.py) flattens every dict in the list into ONE urlencoded query
+# string, so two `role:` entries become a single `?role=server&role=oob-
+# management` GET -- and NetBox's REST API treats repeated instances of the
+# same filter key as a logical OR (confirmed against the plugin's own
+# EXAMPLES doc: "You can repeat tags in the query string ... the
+# query_filters work as a logical OR"), not two separate requests unioned
+# client-side. A single dict `{role: [server, oob-management]}` was NOT
+# used -- query_filters values are passed straight through to urlencode()
+# as scalars, so a list value would serialize wrong. vm_query_filters stays
+# role=server only: no VM in NetBox is (or should be) tagged
+# oob-management, so widening it would just be a no-op filter to carry
+# around. Everything else -- the UDM (Hogtied), switches, APs, cameras,
+# Sonos, Talos nodes -- is still correctly excluded; none of them are ever
 # an Ansible inventory target (unifi_network_dns_record/
 # unifi_network_ip_reservation/netbox_import_udm_state all
 # delegate_to: localhost and hit the UDM's REST API directly).
 #
-# Ansible group membership (nas_nixos / ipa_replicas / ipa_bootstrap) is
-# now driven by NetBox Tags, not Roles -- Device Role is a
+# Ansible group membership (nas_nixos / ipa_replicas / ipa_bootstrap /
+# oob_kvm) is now driven by NetBox Tags, not Roles -- Device Role is a
 # physical/inventory taxonomy (what kind of box), Tags are the
 # functional/Ansible-grouping taxonomy (what plays run against it), and
 # here the tag slugs ARE the group names verbatim (see above). See NetBox
-# config contexts scoped to those same 3 tags for the group_vars-
+# config contexts scoped to those same 4 tags for the group_vars-
 # equivalent data.
+#
+# group_by: role also produces a literal `oob-management` group (from the
+# JetKVMs' Device Role) alongside the `oob_kvm` tag group -- harmless, but
+# ansible-inventory warns "Invalid characters were found in group names but
+# not replaced" because Ansible group names can't contain hyphens
+# (group_names_raw keeps NetBox's role slug verbatim rather than
+# sanitizing it). No playbook here targets `hosts: oob-management` --
+# `oob_kvm` (the tag group) is what jetkvm-netbird-update.yml actually
+# uses -- so this is cosmetic, not a routing risk; noted so the warning
+# doesn't get mistaken for something broken by this change.
 plugin: netbox.netbox.nb_inventory
 api_endpoint: http://172.29.10.20:8080
 token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
@@ -60,6 +84,7 @@ headers:
 
 device_query_filters:
   - role: server
+  - role: oob-management
 vm_query_filters:
   - role: server
 
@@ -67,7 +92,14 @@ interfaces: false # see the ansible_host note below for why this doesn't help co
 services: false
 config_context: true # this is how group_vars-equivalent data arrives
 flatten_config_context: true # flat host_vars, not nested under .config_context
-plurals: false # `role`/`site`/`status` singular, matching today's flat host_vars shape
+plurals: false # `role`/`site` singular, matching today's flat host_vars shape --
+# `status` is the one exception: it stays the nested NetBox API
+# {value, label} dict even with plurals: false (verified live via
+# `ansible-inventory --host`, 2026-08-27 -- see jetkvm-netbird-update.yml's
+# reachability gate, which keys off `status.value` for exactly this
+# reason). The `compose:` block below already relied on that nested shape
+# (`status.value == 'staged'`); this comment previously implied status
+# flattened too, which it does not.
 group_names_raw: true # keep NetBox's own tag/role/site/status names as group names
 
 group_by:
