@@ -16,6 +16,12 @@ tasks:
     cmds:
       - op run --env-file ../../.env -- tofu init
 
+  init-upgrade:
+    desc: Re-resolve provider/module versions against current constraints and update the lock file
+    dir: '{{.TF_DIR}}'
+    cmds:
+      - op run --env-file ../../.env -- tofu init -upgrade
+
   plan:
     desc: Plan changes
     dir: '{{.TF_DIR}}'
