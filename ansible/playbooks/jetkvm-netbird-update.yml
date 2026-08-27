@@ -5,6 +5,14 @@
 #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml            # latest release
 #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml -e netbird_version=0.75.0
 #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml --limit jetkvm-sdg-01
+#   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml --skip-tags update
+#     # real connection, real (read-only) on-device version check, reports
+#     # "deployed X -> target Y", nothing else runs -- every download/stage/
+#     # swap task below is tagged `update`. Use this, not --check, to just
+#     # see if an update is needed: ansible.builtin.raw doesn't support
+#     # check_mode (Ansible skips such tasks entirely under --check rather
+#     # than simulating them), so --check can never actually read the real
+#     # on-device version here.
 #
 # Device constraints (see the oob_kvm inventory comment): no python → only
 # `raw` runs on-device; no sftp-server → the binary travels cat-over-ssh
@@ -67,6 +75,14 @@
         - netbird_version is not defined
         - hostvars['localhost'].nb_target is not defined
       delegate_to: localhost
+      # check_mode: false -- a plain GET with no side effects, always safe
+      # to run for real. Without this, Ansible's default check-mode
+      # behavior for `uri` skips the actual request and leaves `_latest`
+      # without a `.json` key, so the very next task's `_latest.json.tag_name`
+      # blows up with "object of type 'dict' has no attribute 'json'" before
+      # the play ever reaches the device -- caught live under --check
+      # 2026-08-27, the second task in the play, every single run.
+      check_mode: false
       ansible.builtin.uri:
         url: https://api.github.com/repos/netbirdio/netbird/releases/latest
         return_content: true
@@ -85,6 +101,7 @@
              else (_latest.json.tag_name | regex_replace('^v', '')) }}
 
     - name: Create the artifact dir
+      tags: [update]
       delegate_to: localhost
       ansible.builtin.file:
         path: "/tmp/jetkvm-netbird-{{ hostvars['localhost'].nb_target }}"
@@ -93,6 +110,7 @@
       register: _scratch
 
     - name: Download tarball + checksums (skips when already present)
+      tags: [update]
       delegate_to: localhost
       ansible.builtin.get_url:
         url: "https://github.com/netbirdio/netbird/releases/download/v{{ hostvars['localhost'].nb_target }}/{{ item }}"
@@ -104,6 +122,7 @@
         - "netbird_{{ hostvars['localhost'].nb_target }}_checksums.txt"
 
     - name: Verify the tarball against the published checksum
+      tags: [update]
       delegate_to: localhost
       ansible.builtin.shell:
         # POSIX sh, no `executable:` pin. This used to `set -o pipefail` and
@@ -137,6 +156,7 @@
     # Plain tar, not ansible.builtin.unarchive: the module requires GNU tar
     # and refuses macOS bsdtar (live finding); the CLI extracts fine.
     - name: Extract the netbird binary
+      tags: [update]
       delegate_to: localhost
       ansible.builtin.command:
         cmd: >-
@@ -149,6 +169,7 @@
     # last firmware update ate it; restore from the pristine /userdata copy
     # BEFORE touching the binary so apply-update.sh can restart the service.
     - name: Restore S50netbird if the rootfs was reflashed
+      tags: [update]
       ansible.builtin.raw: |
         if [ ! -f /etc/init.d/S50netbird ]; then
           cp /userdata/netbird/S50netbird /etc/init.d/S50netbird
@@ -159,6 +180,9 @@
       register: _s50
       changed_when: "'RESTORED' in _s50.stdout"
 
+    # Untagged (always runs) and reads the binary directly rather than via
+    # the S50netbird init script, so this is correct whether or not the
+    # restore task above ran.
     - name: Read the currently deployed version
       ansible.builtin.raw: >-
         SSL_CERT_FILE=/userdata/netbird/cacert.pem
@@ -166,11 +190,25 @@
       register: _current
       changed_when: false
 
+    # Untagged (always runs) -- this is the answer to "is an update needed",
+    # via a REAL connection and REAL (read-only) on-device version check.
+    # `--skip-tags update` stops here: every task below is tagged `update`,
+    # so none of the staging/swap machinery runs. This is deliberately NOT
+    # Ansible's generic --check: ansible.builtin.raw declares `check_mode:
+    # support: none`, and Ansible's documented behavior for that is to SKIP
+    # the task entirely under --check rather than simulate it -- so the
+    # version-read above would never actually run under --check, and there'd
+    # be no real version to report (caught live 2026-08-27, testing
+    # --check --diff against jetkvm-sdg-02: it failed even earlier, on the
+    # control-node uri/get_url tasks, before ever reaching this point).
+    #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml \
+    #     --skip-tags update --limit jetkvm-sdg-01
     - name: Report version state
       ansible.builtin.debug:
         msg: "deployed {{ _current.stdout | trim }} → target {{ hostvars['localhost'].nb_target }}"
 
     - name: Stage the new binary in retryable 4MiB chunks (dd-seek over ssh)
+      tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
       ansible.builtin.shell: |
@@ -209,6 +247,7 @@
       changed_when: true
 
     - name: Verify the staged binary's checksum on-device
+      tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       ansible.builtin.raw: >-
         sha256sum /userdata/netbird/netbird.new
@@ -225,6 +264,7 @@
     # reliable double-forking detach. The script is written to a file first
     # so no shell-quoting survives the ssh hop.
     - name: Stage the swap script
+      tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       ansible.builtin.raw: |
         cd /userdata/netbird
@@ -246,6 +286,7 @@
       failed_when: "'swap staged' not in _swapstage.stdout"
 
     - name: Swap binaries and restart netbird (detached from this session)
+      tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       ansible.builtin.raw: |
         start-stop-daemon -S -b -x /userdata/netbird/do-swap.sh && echo "swap dispatched"
@@ -264,6 +305,7 @@
     # it holds on this no-python raw-only device just like everything else
     # here.
     - name: Wait for the console's SSH transport to come back after the restart
+      tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       ansible.builtin.wait_for_connection:
         connect_timeout: 10
@@ -272,6 +314,7 @@
         timeout: 120
 
     - name: Wait for the device to return on the new version
+      tags: [update]
       ansible.builtin.raw: |
         export SSL_CERT_FILE=/userdata/netbird/cacert.pem
         v=$(/userdata/netbird/netbird version)
@@ -286,5 +329,6 @@
         and 'Connected' in _verify.stdout
 
     - name: Result
+      tags: [update]
       ansible.builtin.debug:
         msg: "{{ _verify.stdout | trim }}"
