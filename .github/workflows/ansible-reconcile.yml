@@ -72,6 +72,11 @@ jobs:
         # unifi_network_* role's defaults/main.yml); Connect on nas-sdg is
         # scoped to nas-overlay only, so this points at a duplicate of the
         # same "UniFi UDM Pro (ansible)" item kept there for CI's sake.
+        # ansible_remote_tmp: these tasks delegate_to localhost (the UDM
+        # API lives controller-side) -- $HOME is empty for this runner's
+        # DynamicUser (workDir is a root-owned bind mount nix-personal's
+        # gh-runners.nix never chowns), so the default ~/.ansible/tmp
+        # resolves to the unwritable "/.ansible/tmp".
         run: >-
           op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
           playbooks/unifi-network.yml
@@ -79,6 +84,7 @@ jobs:
           -e unifi_network_dhcp_pxe_creds_op_vault=nas-overlay
           -e unifi_network_port_forward_creds_op_vault=nas-overlay
           -e unifi_network_ip_reservation_creds_op_vault=nas-overlay
+          -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp"
 
   # Deliberately NOT part of the `reconcile` job above, and deliberately
   # check-only: JetKVM firmware swaps are risky enough (see
@@ -108,6 +114,6 @@ jobs:
           {
             echo '## JetKVM netbird version check'
             echo '```'
-            op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update
+            op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
