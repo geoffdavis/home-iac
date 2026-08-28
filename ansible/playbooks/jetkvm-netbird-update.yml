@@ -222,9 +222,21 @@
       tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
+      vars:
+        # Plain `ssh`, not Ansible's connection plugin -- doesn't see
+        # ansible_ssh_common_args/ansible_ssh_private_key_file, so those
+        # have to be reconstructed here explicitly (live finding
+        # 2026-08-28: the CI runner's ephemeral known_hosts and dedicated
+        # CI key both need restating for this to work there). Computed
+        # in vars, not inline in the shell block: quotes nested inside a
+        # {{ }} expression there confuse ansible.builtin.shell's
+        # free-form argument splitter ("unbalanced jinja2 block or
+        # quotes").
+        _ssh_identity_opt: "{{ ('-i ' + ansible_ssh_private_key_file) if ansible_ssh_private_key_file is defined else '' }}"
       ansible.builtin.shell: |
         set -eu
         cd {{ _scratch.path | quote }}
+        ssh_opts="-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ _ssh_identity_opt }}"
         rm -rf parts && mkdir parts
         split -b 4194304 netbird parts/chunk.
         # Clear any stale staging file: dd conv=notrunc never truncates, so
@@ -232,7 +244,7 @@
         # and fail the sha256 verify (review finding — and we hit exactly
         # this stale file live).
         for try in 1 2 3; do
-          if ssh -o BatchMode=yes -o ConnectTimeout=15 root@{{ ansible_host }} \
+          if ssh $ssh_opts root@{{ ansible_host }} \
                "rm -f /userdata/netbird/netbird.new"; then
             break
           fi
@@ -243,7 +255,7 @@
         for p in parts/chunk.*; do
           ok=0
           for try in 1 2 3 4 5; do
-            if ssh -o BatchMode=yes -o ConnectTimeout=15 root@{{ ansible_host }} \
+            if ssh $ssh_opts root@{{ ansible_host }} \
                  "dd of=/userdata/netbird/netbird.new bs=4194304 seek=$i conv=notrunc 2>/dev/null" < "$p"; then
               ok=1; break
             fi
