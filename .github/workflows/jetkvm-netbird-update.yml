@@ -1,0 +1,58 @@
+name: JetKVM netbird Update
+
+# Manual-only counterpart to ansible-reconcile.yml's jetkvm-netbird-check
+# job: that one only reports version drift on a schedule, this one
+# actually applies an update -- deliberately never automated (see
+# jetkvm-netbird-update.yml's own header on the overlay-saturation
+# failure mode a botched update can hit). Trigger via the Actions tab's
+# "Run workflow" button, or `gh workflow run jetkvm-netbird-update.yml
+# [-f netbird_version=X.Y.Z] [-f limit=jetkvm-sdg-01]`.
+on:
+  workflow_dispatch:
+    inputs:
+      netbird_version:
+        description: "netbird version to install (blank = latest release)"
+        required: false
+      limit:
+        description: "Ansible --limit pattern (blank = every reachable console)"
+        required: false
+
+jobs:
+  update:
+    # nas-sdg specifically -- LAN reachability to the JetKVM consoles and
+    # to the 1Password Connect server. See AGENTS.md.
+    runs-on: [self-hosted, nix, x86_64-linux, nas-sdg]
+    env:
+      OP_CONNECT_HOST: http://172.29.10.20:8081
+      OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Update JetKVM netbird
+        env:
+          NETBIRD_VERSION: ${{ github.event.inputs.netbird_version }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          set -o pipefail
+          {
+            echo "## JetKVM netbird update"
+            echo "- version: ${NETBIRD_VERSION:-latest}"
+            echo "- limit: ${LIMIT:-all reachable consoles}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          args=(-i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp")
+          [ -n "$NETBIRD_VERSION" ] && args+=(-e "netbird_version=$NETBIRD_VERSION")
+          [ -n "$LIMIT" ] && args+=(--limit "$LIMIT")
+
+          op run --env-file .env.ci -- ansible-playbook "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
