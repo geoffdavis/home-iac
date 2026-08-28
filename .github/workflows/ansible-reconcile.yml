@@ -19,6 +19,10 @@ jobs:
     env:
       OP_CONNECT_HOST: http://172.29.10.20:8081
       OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
+      # Fail loudly instead of downloading (and failing to exec, per the
+      # runner's own systemd sandboxing) a managed Python if the nix-
+      # provided one ever goes missing from the runner's extraPackages.
+      UV_PYTHON_DOWNLOADS: never
     defaults:
       run:
         working-directory: ansible
@@ -68,6 +72,10 @@ jobs:
     env:
       OP_CONNECT_HOST: http://172.29.10.20:8081
       OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
+      # Fail loudly instead of downloading (and failing to exec, per the
+      # runner's own systemd sandboxing) a managed Python if the nix-
+      # provided one ever goes missing from the runner's extraPackages.
+      UV_PYTHON_DOWNLOADS: never
     defaults:
       run:
         working-directory: ansible
