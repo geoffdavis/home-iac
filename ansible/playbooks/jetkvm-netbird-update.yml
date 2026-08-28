@@ -100,8 +100,63 @@
           {{ netbird_version if netbird_version is defined
              else (_latest.json.tag_name | regex_replace('^v', '')) }}
 
+    # Moved ahead of the download/verify/extract block below (2026-08-28
+    # live finding): those three tasks used to run unconditionally, before
+    # this play even knew whether an update was needed -- every fleet-wide
+    # run downloaded + verified + extracted the tarball on EVERY console,
+    # even ones already on the target version. Restoring S50netbird here
+    # doesn't need the tarball at all (it only needs to happen before the
+    # swap/restart, not before the download), and reading the current
+    # version obviously doesn't either -- so both can move ahead of the
+    # `when: (_current.stdout | trim) != hostvars['localhost'].nb_target`
+    # gate now applied to the download/verify/extract tasks.
+    #
+    # Firmware updates reflash the rootfs -- a missing init script means
+    # the last firmware update ate it; restore from the pristine /userdata
+    # copy BEFORE touching the binary so apply-update.sh can restart the
+    # service.
+    - name: Restore S50netbird if the rootfs was reflashed
+      tags: [update]
+      ansible.builtin.raw: |
+        if [ ! -f /etc/init.d/S50netbird ]; then
+          cp /userdata/netbird/S50netbird /etc/init.d/S50netbird
+          echo RESTORED
+        else
+          echo PRESENT
+        fi
+      register: _s50
+      changed_when: "'RESTORED' in _s50.stdout"
+
+    # Untagged (always runs) and reads the binary directly rather than via
+    # the S50netbird init script, so this is correct whether or not the
+    # restore task above ran.
+    - name: Read the currently deployed version
+      ansible.builtin.raw: >-
+        SSL_CERT_FILE=/userdata/netbird/cacert.pem
+        /userdata/netbird/netbird version 2>/dev/null || echo unknown
+      register: _current
+      changed_when: false
+
+    # Untagged (always runs) -- this is the answer to "is an update needed",
+    # via a REAL connection and REAL (read-only) on-device version check.
+    # `--skip-tags update` stops here: every task below is tagged `update`,
+    # so none of the staging/swap machinery runs. This is deliberately NOT
+    # Ansible's generic --check: ansible.builtin.raw declares `check_mode:
+    # support: none`, and Ansible's documented behavior for that is to SKIP
+    # the task entirely under --check rather than simulating it -- so the
+    # version-read above would never actually run under --check, and there'd
+    # be no real version to report (caught live 2026-08-27, testing
+    # --check --diff against jetkvm-sdg-02: it failed even earlier, on the
+    # control-node uri/get_url tasks, before ever reaching this point).
+    #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml \
+    #     --skip-tags update --limit jetkvm-sdg-01
+    - name: Report version state
+      ansible.builtin.debug:
+        msg: "deployed {{ _current.stdout | trim }} → target {{ hostvars['localhost'].nb_target }}"
+
     - name: Create the artifact dir
       tags: [update]
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
       ansible.builtin.file:
         path: "/tmp/jetkvm-netbird-{{ hostvars['localhost'].nb_target }}"
@@ -111,6 +166,7 @@
 
     - name: Download tarball + checksums (skips when already present)
       tags: [update]
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
       ansible.builtin.get_url:
         url: "https://github.com/netbirdio/netbird/releases/download/v{{ hostvars['localhost'].nb_target }}/{{ item }}"
@@ -123,6 +179,7 @@
 
     - name: Verify the tarball against the published checksum
       tags: [update]
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
       ansible.builtin.shell:
         # POSIX sh, no `executable:` pin. This used to `set -o pipefail` and
@@ -168,6 +225,7 @@
     # and refuses macOS bsdtar (live finding); the CLI extracts fine.
     - name: Extract the netbird binary
       tags: [update]
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
       delegate_to: localhost
       ansible.builtin.command:
         cmd: >-
@@ -176,48 +234,6 @@
         creates: "{{ _scratch.path }}/netbird"
 
     # ── device half (raw only from here down) ────────────────────────────
-    # Firmware updates reflash the rootfs — a missing init script means the
-    # last firmware update ate it; restore from the pristine /userdata copy
-    # BEFORE touching the binary so apply-update.sh can restart the service.
-    - name: Restore S50netbird if the rootfs was reflashed
-      tags: [update]
-      ansible.builtin.raw: |
-        if [ ! -f /etc/init.d/S50netbird ]; then
-          cp /userdata/netbird/S50netbird /etc/init.d/S50netbird
-          echo RESTORED
-        else
-          echo PRESENT
-        fi
-      register: _s50
-      changed_when: "'RESTORED' in _s50.stdout"
-
-    # Untagged (always runs) and reads the binary directly rather than via
-    # the S50netbird init script, so this is correct whether or not the
-    # restore task above ran.
-    - name: Read the currently deployed version
-      ansible.builtin.raw: >-
-        SSL_CERT_FILE=/userdata/netbird/cacert.pem
-        /userdata/netbird/netbird version 2>/dev/null || echo unknown
-      register: _current
-      changed_when: false
-
-    # Untagged (always runs) -- this is the answer to "is an update needed",
-    # via a REAL connection and REAL (read-only) on-device version check.
-    # `--skip-tags update` stops here: every task below is tagged `update`,
-    # so none of the staging/swap machinery runs. This is deliberately NOT
-    # Ansible's generic --check: ansible.builtin.raw declares `check_mode:
-    # support: none`, and Ansible's documented behavior for that is to SKIP
-    # the task entirely under --check rather than simulate it -- so the
-    # version-read above would never actually run under --check, and there'd
-    # be no real version to report (caught live 2026-08-27, testing
-    # --check --diff against jetkvm-sdg-02: it failed even earlier, on the
-    # control-node uri/get_url tasks, before ever reaching this point).
-    #   uv run ansible-playbook playbooks/jetkvm-netbird-update.yml \
-    #     --skip-tags update --limit jetkvm-sdg-01
-    - name: Report version state
-      ansible.builtin.debug:
-        msg: "deployed {{ _current.stdout | trim }} → target {{ hostvars['localhost'].nb_target }}"
-
     - name: Stage the new binary in retryable 4MiB chunks (dd-seek over ssh)
       tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
@@ -347,13 +363,19 @@
         connect_timeout: 10
         delay: 5
         sleep: 5
-        # 120s wasn't quite enough over the nas-sdg CI runner's network
-        # path -- a real update there (2026-08-28, jetkvm-sct-01) came
-        # back at 127s, 7s past the old timeout, after the netbird
-        # restart's P2P/ICE renegotiation genuinely took longer than an
-        # interactive/local run typically sees. The update itself
-        # succeeded; only this wait falsely reported failure.
-        timeout: 180
+        # Three real updates (2026-08-28) blew through 120s, then 180s,
+        # then 300s in turn -- every device had actually already come
+        # back on the target version each time, this wait just wasn't
+        # generous enough to see it. wait_for_connection reports `elapsed`
+        # at (approximately) its own ceiling when it times out, not the
+        # real reconnection time, so each prior "it came back at Ns" note
+        # was actually just "it took MORE than N-ish seconds" -- there's
+        # no real empirical upper bound yet, only a lower one that kept
+        # climbing in lockstep with the timeout. 600s is a decisive jump
+        # rather than another narrow nudge; if this still isn't enough,
+        # the reconnection mechanism itself needs investigating, not this
+        # number again.
+        timeout: 600
 
     - name: Wait for the device to return on the new version
       tags: [update]
