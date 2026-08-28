@@ -93,6 +93,38 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   is deliberately duplicated into `nas-overlay` for this workflow rather
   than expanding Connect's scope — keep both copies in sync if the UDM
   credential ever rotates.
+- The `ipa_replicas` group (FreeIPA autopatch/metrics/rsyslog) uses a
+  dedicated IPA service account, `svc-ansible`, not the local-only `rocky`
+  cloud-init user — an IPA-managed identity that works fleet-wide (all
+  replicas share the same LDAP-backed sudo rule) rather than a per-VM local
+  account with no central audit trail. Set only via `-e ansible_user=` /
+  `-e ansible_ssh_private_key_file=` on the FreeIPA play invocations in
+  this workflow — `inventory.yml`'s default `ansible_user: rocky` is
+  untouched, so local/interactive runs are unaffected. The key is
+  `home-iac-ci-freeipa-ssh-key` (nas-overlay), set as `svc-ansible`'s
+  `ipaSshPubKey`.
+  - `svc-ansible-sudo` (an IPA sudo rule) grants it passwordless sudo,
+    scoped by identity (`svc-ansible-group` membership) and by command
+    (`/usr/bin/python3*` — matching what Ansible's `become` actually
+    invokes, an AnsiballZ-wrapped Python script, not a fixed binary+args
+    sudoers could match more narrowly). `hostcategory` is `all` and
+    **cannot** be scoped further — extensively verified live (2026-08-28):
+    neither an `ipaservers`-hostgroup reference nor a literal FQDN
+    resolves for host-based sudo matching on this IPA/SSSD version, even
+    with `sss_cache -R` + full `ipactl restart` + `ipa-compat-manage
+    enable` (already active) — `getent netgroup ipaservers` returns
+    nothing despite correct `nsswitch.conf`/`sssd.conf` config, a known
+    upstream FreeIPA quirk affecting IPA *servers* resolving their own
+    hostgroups as netgroups. Don't spend time re-attempting host-scoping
+    without checking whether that upstream issue has since been fixed.
+  - The account's Kerberos keys **must** be provisioned (`ipa user-mod
+    svc-ansible --random`, or any password set) — an IPA user with none
+    behaves oddly for authorization purposes even though SSH pubkey login
+    (which never touches Kerberos) works fine regardless.
+  - When diagnosing sudo-rule issues here again: `sudo -l -U <user>` (as
+    root, querying *about* another user) is unreliable and gave false
+    negatives multiple times during setup — trust `sudo -l`/an actual
+    command run as the user themselves instead.
 - The same workflow's `jetkvm-netbird-check` job is deliberately
   check-only (`--skip-tags update`, per `jetkvm-netbird-update.yml`'s own
   header) — JetKVM firmware swaps stay a manual decision, never
