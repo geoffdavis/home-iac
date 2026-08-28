@@ -156,6 +156,10 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   header) — JetKVM firmware swaps stay a manual decision, never
   auto-applied on a schedule. Don't change this job to actually apply
   updates without an explicit ask; it's reporting-only by design.
+- The manual-only counterpart, `.github/workflows/jetkvm-netbird-update.yml`
+  (`workflow_dispatch` only, optional `netbird_version`/`limit` inputs),
+  actually applies the update — triggered by hand via the Actions tab or
+  `gh workflow run jetkvm-netbird-update.yml`, never on a schedule.
 
 ## Git / PRs
 
