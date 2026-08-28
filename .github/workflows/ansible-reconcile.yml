@@ -15,6 +15,11 @@ jobs:
     # nas-sdg specifically, not the generic self-hosted pool: this job
     # needs LAN reachability to the UDM and FreeIPA replicas, and to the
     # 1Password Connect server, which only nas-sdg has (see AGENTS.md).
+    # ansible-playbook/ansible-galaxy come from the runner's own nix
+    # package set (nix-personal's gh-runners.nix), not installed at
+    # runtime -- a uv-based runtime install hit two dead ends here
+    # (uv missing from PATH, then a uv-managed Python download that
+    # failed to exec under this unit's systemd sandboxing).
     runs-on: [self-hosted, nix, x86_64-linux, nas-sdg]
     env:
       OP_CONNECT_HOST: http://172.29.10.20:8081

@@ -72,6 +72,12 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   repo (`hosts/nas-sdg/default.nix`'s `my.ghRunners.repos`,
   `hosts/nas-sdg/apps/onepassword-connect.nix`) — not something to touch
   from this repo.
+- `ansible-playbook`/`ansible-galaxy` come from the runner's own nix package
+  set (`gh-runners.nix`'s `extraPackages`), not installed at workflow
+  runtime. A `uv sync`-based runtime install was tried first and hit two
+  dead ends — `uv` missing from the runner's PATH, then a uv-managed Python
+  download that failed to exec under the runner unit's own systemd
+  sandboxing — before landing on baking the package in instead.
 - Credentials come from 1Password **Connect**, not a Service Account (this
   account is on a Family plan, which doesn't support Service Accounts) —
   `OP_CONNECT_HOST`/`OP_CONNECT_TOKEN` env vars, which `op` uses
