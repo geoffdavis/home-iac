@@ -347,13 +347,17 @@
         connect_timeout: 10
         delay: 5
         sleep: 5
-        # 120s wasn't quite enough over the nas-sdg CI runner's network
-        # path -- a real update there (2026-08-28, jetkvm-sct-01) came
-        # back at 127s, 7s past the old timeout, after the netbird
-        # restart's P2P/ICE renegotiation genuinely took longer than an
-        # interactive/local run typically sees. The update itself
-        # succeeded; only this wait falsely reported failure.
-        timeout: 180
+        # Two real updates (2026-08-28) show enough variance that 120s
+        # and then 180s both proved too tight: jetkvm-sct-01 came back at
+        # 127s, jetkvm-sdg-01 took >188s (timed out at the 180s ceiling,
+        # but had actually already come back on the target version --
+        # only this wait falsely reported failure both times). The
+        # netbird restart's P2P/ICE renegotiation over the nas-sdg CI
+        # runner's network path is just slower and more variable than an
+        # interactive/local run typically sees. 300s matches this fleet's
+        # existing convention for this class of wait (see nix-personal's
+        # deploy-rs --confirm-timeout).
+        timeout: 300
 
     - name: Wait for the device to return on the new version
       tags: [update]
