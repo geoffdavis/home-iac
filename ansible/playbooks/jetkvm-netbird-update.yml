@@ -132,8 +132,12 @@
         # birdrock: "No such file or directory: b'/bin/bash'").
         # Comparing the two hashes explicitly needs no pipefail: an empty
         # `expected` catches a missing/renamed checksum line, which is the
-        # failure pipefail was guarding against. shasum -a 256 is used
-        # rather than sha256sum because macOS has only the former.
+        # failure pipefail was guarding against. Neither sha256sum nor
+        # shasum is guaranteed present on every controller this delegates
+        # to: macOS ships shasum but not sha256sum, the nix-personal
+        # nas-sdg CI runner ships sha256sum but not shasum (live finding
+        # 2026-08-28, first real run of jetkvm-netbird-update.yml) — so
+        # detect whichever exists rather than hardcoding one.
         cmd: |
           set -eu
           cd {{ _scratch.path | quote }}
@@ -145,7 +149,14 @@
             echo "no checksum line for ${tarball}" >&2
             exit 1
           fi
-          actual=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$tarball" | cut -d' ' -f1)
+          elif command -v shasum >/dev/null 2>&1; then
+            actual=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
+          else
+            echo "neither sha256sum nor shasum found on this controller" >&2
+            exit 1
+          fi
           if [ "$expected" != "$actual" ]; then
             echo "checksum mismatch for ${tarball}: $expected != $actual" >&2
             exit 1
@@ -246,6 +257,20 @@
       register: _stage
       changed_when: true
 
+    # ansible.builtin.stat, not a shelled-out shasum/sha256sum: the
+    # previous lookup('pipe', 'shasum -a 256 ...') ran unconditionally on
+    # the controller and hit the same missing-shasum gap as the tarball
+    # verify above the moment an actual update (not just --skip-tags
+    # update) ran on the nas-sdg CI runner (live finding 2026-08-28).
+    - name: Compute the local netbird binary's checksum
+      tags: [update]
+      when: (_current.stdout | trim) != hostvars['localhost'].nb_target
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ _scratch.path }}/netbird"
+        checksum_algorithm: sha256
+      register: _local_netbird_stat
+
     - name: Verify the staged binary's checksum on-device
       tags: [update]
       when: (_current.stdout | trim) != hostvars['localhost'].nb_target
@@ -254,8 +279,7 @@
       register: _staged_sum
       changed_when: false
       failed_when: >-
-        (lookup('pipe', 'shasum -a 256 ' + ((_scratch.path + '/netbird') | quote))
-         | split | first) not in _staged_sum.stdout
+        _local_netbird_stat.stat.checksum not in _staged_sum.stdout
 
     # Detached swap: the restart drops the overlay tunnel this very session
     # came in on, so the swap must survive the session. `setsid ... &` from
