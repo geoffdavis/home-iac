@@ -47,7 +47,17 @@ nixos_freeipa_vm_server_fqdn: "{{ nixos_freeipa_vm_name }}.ipa.geoffdavis.com"
 nixos_freeipa_vm_netbird_peer_name: "{{ nixos_freeipa_vm_name }}-replica"
 nixos_freeipa_vm_netbird_setup_key_op_item: "freeipa-netbird-setup-key-{{ inventory_hostname }}"
 # Fleet-wide 1P SSH-key item name (identical on every host).
-nixos_freeipa_vm_ssh_pubkey_op_item: "ansible-ssh-key"
+# Rotated 2026-08-27: the old "ansible-ssh-key" item's private key was
+# accidentally exposed in a Claude Code session transcript. This item is
+# fresh; the old one still exists (couldn't be deleted/edited via `op`
+# CLI -- SSH Key item editing/deletion isn't supported there) and needs
+# manual deletion in the 1Password app once nothing trusts its public
+# key anymore. Only affects VM provisioning (cloud-init, first boot) --
+# does NOT retroactively update authorized_keys on ipa-sdg/sct/cin,
+# which still trust the OLD (now-compromised) key until manually
+# rotated there too, once SSH/Kerberos access to those hosts works
+# again.
+nixos_freeipa_vm_ssh_pubkey_op_item: "ansible-ssh-key-2026-08-27"
 # Fleet-wide pinned hash for the Rocky 10 GenericCloud qcow2 — same pin
 # as truenas_freeipa_vm_image_sha256 in group_vars/nas_truenas.yml; bump
 # BOTH together (and the image_url defaults) when refreshing the image.

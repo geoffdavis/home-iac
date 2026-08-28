@@ -74,7 +74,7 @@ derived from `site` / `inventory_hostname`.
 | `nixos_freeipa_vm_server_fqdn` | FreeIPA realm FQDN for this replica | `ipa-cin.ipa.geoffdavis.com` |
 | `nixos_freeipa_vm_netbird_peer_name` | Netbird peer name | `ipa-cin-replica` |
 | `nixos_freeipa_vm_netbird_setup_key_op_item` | 1P item name (vault: `nas-overlay`) | `freeipa-netbird-setup-key-nas-cin` |
-| `nixos_freeipa_vm_ssh_pubkey_op_item` | 1P item with operator SSH pubkey | `ansible-ssh-key` |
+| `nixos_freeipa_vm_ssh_pubkey_op_item` | 1P item with operator SSH pubkey | `ansible-ssh-key-2026-08-27` |
 | `nixos_freeipa_vm_image_sha256` | SHA256 of the Rocky 10 qcow2 (forces pinning) | `28628abf...` |
 
 All six are derived from `site` / `inventory_hostname` in
