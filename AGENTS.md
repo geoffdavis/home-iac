@@ -104,12 +104,22 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   `home-iac-ci-freeipa-ssh-key` (nas-overlay), set as `svc-ansible`'s
   `ipaSshPubKey`.
   - `svc-ansible-sudo` (an IPA sudo rule) grants it passwordless sudo,
-    scoped three ways: identity (`svc-ansible-group` membership), host
-    (literal FQDNs — `ipa-sdg.ipa.geoffdavis.com`,
-    `ipa-sct.ipa.geoffdavis.com`, `ipa-cin.ipa.geoffdavis.com`, **not** a
-    hostgroup), and command (`/usr/bin/python3*` — matching what Ansible's
-    `become` actually invokes, an AnsiballZ-wrapped Python script, not a
-    fixed binary+args sudoers could match more narrowly).
+    scoped by identity (`svc-ansible-group` membership) and host (literal
+    FQDNs — `ipa-sdg.ipa.geoffdavis.com`, `ipa-sct.ipa.geoffdavis.com`,
+    `ipa-cin.ipa.geoffdavis.com`, **not** a hostgroup), but `cmdcategory:
+    all` — **not** further restricted by command. Ansible's `become`
+    (sudo) wraps every module execution in `/bin/sh -c "echo
+    BECOME-SUCCESS...; <interpreter> ..."` for its success-marker
+    detection, so sudo is actually authorizing `/bin/sh`, not the
+    interpreter — confirmed live (2026-08-28): `sudo -n /usr/bin/python3
+    -c ...` succeeds under a `/usr/bin/python3*`-restricted rule, but the
+    same rule rejects Ansible's real `dnf`/`systemd`/`template` module
+    tasks with "Missing sudo password" every time, because those go
+    through the sh-wrapped path. Allowing `/bin/sh` explicitly would look
+    more scoped than `cmdcategory: all` but isn't (a shell can run
+    anything) — don't bother re-attempting command-level scoping unless
+    the roles here stop using standard Ansible modules in favor of raw
+    `command`/`shell` tasks with literal, matchable argv.
   - **Hostgroup/netgroup-based** host scoping (`--hostgroups=ipaservers`)
     does not resolve on this IPA/SSSD version, confirmed extensively live
     (2026-08-28) — `getent netgroup ipaservers` returns nothing despite
@@ -119,11 +129,20 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
     per-host FQDNs work fine** — the earlier failures were LDAP
     propagation delay, not a real limitation (see below). Use explicit
     hosts, not hostgroups, for any future rule here.
-  - Every change to this rule needs LDAP propagation time (~2 minutes
-    observed) *and* `sss_cache -R && systemctl restart sssd` run **twice**
-    — once immediately, once again after the wait — before it actually
-    takes effect. A single cache-clear immediately after an `ipa
-    sudorule-*` change reliably looks like the change didn't work at all.
+  - Every change to this rule needs LDAP propagation time **before**
+    clearing caches, not after: wait ~2 minutes, *then* run `sss_cache -R
+    && systemctl restart sssd` once. Clearing the cache immediately after
+    an `ipa sudorule-*` change and retesting right away reliably looks
+    like the change didn't work at all, even though it did.
+  - `svc-ansible` has no home directory (`/home/svc-ansible` was never
+    created — no `pam_mkhomedir`, no NFS auto-provision, matches the
+    "Could not chdir to home directory" warning on every login). This
+    breaks Ansible's default remote temp dir
+    (`~/.ansible/tmp`) — `mkdir` under a nonexistent, non-writable
+    `/home/svc-ansible` fails with "Failed to create temporary
+    directory." Every FreeIPA play invocation in this workflow passes
+    `-e ansible_remote_tmp=/tmp/.ansible-svc-ansible` to route around it;
+    keep that if you ever touch these commands.
   - The account's Kerberos keys **must** be provisioned (`ipa user-mod
     svc-ansible --random`, or any password set) — an IPA user with none
     behaves oddly for authorization purposes even though SSH pubkey login
