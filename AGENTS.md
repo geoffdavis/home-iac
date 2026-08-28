@@ -104,19 +104,26 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   `home-iac-ci-freeipa-ssh-key` (nas-overlay), set as `svc-ansible`'s
   `ipaSshPubKey`.
   - `svc-ansible-sudo` (an IPA sudo rule) grants it passwordless sudo,
-    scoped by identity (`svc-ansible-group` membership) and by command
-    (`/usr/bin/python3*` — matching what Ansible's `become` actually
-    invokes, an AnsiballZ-wrapped Python script, not a fixed binary+args
-    sudoers could match more narrowly). `hostcategory` is `all` and
-    **cannot** be scoped further — extensively verified live (2026-08-28):
-    neither an `ipaservers`-hostgroup reference nor a literal FQDN
-    resolves for host-based sudo matching on this IPA/SSSD version, even
-    with `sss_cache -R` + full `ipactl restart` + `ipa-compat-manage
-    enable` (already active) — `getent netgroup ipaservers` returns
-    nothing despite correct `nsswitch.conf`/`sssd.conf` config, a known
-    upstream FreeIPA quirk affecting IPA *servers* resolving their own
-    hostgroups as netgroups. Don't spend time re-attempting host-scoping
-    without checking whether that upstream issue has since been fixed.
+    scoped three ways: identity (`svc-ansible-group` membership), host
+    (literal FQDNs — `ipa-sdg.ipa.geoffdavis.com`,
+    `ipa-sct.ipa.geoffdavis.com`, `ipa-cin.ipa.geoffdavis.com`, **not** a
+    hostgroup), and command (`/usr/bin/python3*` — matching what Ansible's
+    `become` actually invokes, an AnsiballZ-wrapped Python script, not a
+    fixed binary+args sudoers could match more narrowly).
+  - **Hostgroup/netgroup-based** host scoping (`--hostgroups=ipaservers`)
+    does not resolve on this IPA/SSSD version, confirmed extensively live
+    (2026-08-28) — `getent netgroup ipaservers` returns nothing despite
+    correct `nsswitch.conf`/`sssd.conf` config and `ipa-compat-manage`
+    already enabled, a known upstream FreeIPA quirk affecting IPA
+    *servers* resolving their own hostgroups as netgroups. **Literal
+    per-host FQDNs work fine** — the earlier failures were LDAP
+    propagation delay, not a real limitation (see below). Use explicit
+    hosts, not hostgroups, for any future rule here.
+  - Every change to this rule needs LDAP propagation time (~2 minutes
+    observed) *and* `sss_cache -R && systemctl restart sssd` run **twice**
+    — once immediately, once again after the wait — before it actually
+    takes effect. A single cache-clear immediately after an `ipa
+    sudorule-*` change reliably looks like the change didn't work at all.
   - The account's Kerberos keys **must** be provisioned (`ipa user-mod
     svc-ansible --random`, or any password set) — an IPA user with none
     behaves oddly for authorization purposes even though SSH pubkey login
