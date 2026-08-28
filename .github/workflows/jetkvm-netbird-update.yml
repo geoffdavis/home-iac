@@ -36,6 +36,15 @@ jobs:
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r collections/requirements.yml
 
+      - name: Load JetKVM CI SSH key
+        # The devices' authorized_keys otherwise only trusts the
+        # interactive op-Personal key (see group_vars/oob_kvm.yml) --
+        # this dedicated CI key is a second, additional entry, not a
+        # replacement.
+        run: |
+          op read "op://nas-overlay/home-iac-ci-jetkvm-ssh-key/private key?ssh-format=openssh" > "$RUNNER_TEMP/jetkvm-ci-key"
+          chmod 600 "$RUNNER_TEMP/jetkvm-ci-key"
+
       - name: Update JetKVM netbird
         env:
           NETBIRD_VERSION: ${{ github.event.inputs.netbird_version }}
@@ -49,7 +58,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          args=(-i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp")
+          args=(-i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp" -e ansible_ssh_private_key_file="$RUNNER_TEMP/jetkvm-ci-key")
           [ -n "$NETBIRD_VERSION" ] && args+=(-e "netbird_version=$NETBIRD_VERSION")
           [ -n "$LIMIT" ] && args+=(--limit "$LIMIT")
 

@@ -12,3 +12,13 @@ ansible_user: root
 # ~/.ssh/config pins *.netbird.cloud to the op-Personal key, which is in
 # each device's /userdata/dropbear/.ssh/authorized_keys — no explicit
 # private key needed here (unlike ipa_replicas, where the pin mismatches).
+
+# Host keys aren't pinnable here: a firmware update reflashes the rootfs
+# (dropbear regenerates fresh host keys on every boot after that), so a
+# static known_hosts entry would break on the next update regardless of
+# how it's provisioned. Disabling strict checking is the honest choice
+# for this device class rather than pretending a stable pin is possible.
+# Also hit live 2026-08-28: the ephemeral nas-sdg GH Actions runner has
+# no persisted known_hosts at all, so the first real CI run against a
+# never-before-seen console failed with "Host key verification failed."
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"

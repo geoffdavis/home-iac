@@ -160,6 +160,49 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
   (`workflow_dispatch` only, optional `netbird_version`/`limit` inputs),
   actually applies the update — triggered by hand via the Actions tab or
   `gh workflow run jetkvm-netbird-update.yml`, never on a schedule.
+- Both jobs need three things layered on top of each other before a
+  JetKVM console is actually reachable from nas-sdg's CI runner (all
+  three were live findings from the first real CI run, 2026-08-28, and
+  each one alone looked like "Connected"/success until tested
+  end-to-end):
+  1. **Netbird ICE candidate correctness** — nas-sdg's own
+     `IFaceBlackList` (nix-personal, `hosts/nas-sdg/network/netbird.nix`)
+     must exclude its Podman bridges and `bond0` (the Management VLAN),
+     so it advertises `br0` — the interface actually in the same
+     netbird/UDM firewall zone as the JetKVM devices — as its ICE host
+     candidate. Getting this wrong doesn't error; `netbird status` still
+     reports "Connected", SSH just silently times out.
+  2. **Netbird Access Control policy** — this was the actual root cause,
+     not the interface selection: netbird's own ACL (separate from the
+     UDM's local firewall) had no rule letting `class-nas-hub` (nas-sdg)
+     reach `class-oob-kvm` on TCP/22, only TCP/80. Fixed by adding a
+     `hub-to-oob-kvm-ssh` policy via the netbird API, mirroring the
+     existing `hub-to-appliance-ssh` policy. Checking the UDM's own
+     firewall zones is not enough to rule this class of failure out —
+     netbird enforces its own, separate ACL on top. Diagnostic sequence
+     that actually isolated this from the ICE candidate issue: `ssh
+     <device>` from an independent peer (proves the device itself is
+     fine) → raw `nc`/`ping` to the device's real LAN IP from nas-sdg
+     (proves LAN/UDM-firewall reachability, bypassing netbird's tunnel
+     entirely) → only then suspect netbird's own ACL. A netbird API
+     token with read/write scope lives in 1Password
+     (`Netbird Access Token - Claude`, Automation vault) for exactly
+     this kind of live diagnosis. The `/api/policies` POST body needs
+     `sources`/`destinations` as bare group-ID string arrays, not the
+     `{id, name, ...}` objects the GET response returns — sending the
+     GET-shaped objects back gives a content-free "couldn't parse JSON
+     request" 400.
+  3. **SSH auth** — the devices' `authorized_keys` only trusts the
+     interactive `op-Personal` 1Password SSH-agent key (see
+     `group_vars/oob_kvm.yml`); the ephemeral CI runner has no such
+     agent. Fixed with a dedicated `home-iac-ci-jetkvm-ssh-key`
+     (nas-overlay vault), added as an *additional* `authorized_keys`
+     entry on every device (not a replacement), passed via
+     `-e ansible_ssh_private_key_file=` on both jobs. Also had to
+     disable `StrictHostKeyChecking` for this group
+     (`group_vars/oob_kvm.yml`) — the ephemeral runner has no persisted
+     `known_hosts`, and pinning one wouldn't survive a firmware reflash
+     anyway (dropbear regenerates host keys on every boot after that).
 
 ## Git / PRs
 
