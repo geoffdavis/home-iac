@@ -35,14 +35,34 @@ jobs:
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r collections/requirements.yml
 
+      - name: Load FreeIPA CI SSH key
+        # Dedicated IPA service account (svc-ansible), not the local-only
+        # rocky user -- see AGENTS.md. Written to the per-job temp dir
+        # (wiped when this ephemeral runner cycles), not the workspace.
+        run: |
+          op read "op://nas-overlay/home-iac-ci-freeipa-ssh-key/private key?ssh-format=openssh" > "$RUNNER_TEMP/freeipa-ci-key"
+          chmod 600 "$RUNNER_TEMP/freeipa-ci-key"
+
       - name: Reconcile FreeIPA autopatch
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-autopatch.yml
+        run: >-
+          op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
+          playbooks/freeipa-autopatch.yml
+          -e ansible_user=svc-ansible
+          -e ansible_ssh_private_key_file="$RUNNER_TEMP/freeipa-ci-key"
 
       - name: Reconcile FreeIPA metrics
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-metrics.yml
+        run: >-
+          op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
+          playbooks/freeipa-metrics.yml
+          -e ansible_user=svc-ansible
+          -e ansible_ssh_private_key_file="$RUNNER_TEMP/freeipa-ci-key"
 
       - name: Reconcile FreeIPA rsyslog forwarding
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-rsyslog.yml
+        run: >-
+          op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
+          playbooks/freeipa-rsyslog.yml
+          -e ansible_user=svc-ansible
+          -e ansible_ssh_private_key_file="$RUNNER_TEMP/freeipa-ci-key"
 
       - name: Reconcile UniFi UDM network config
         # UDM creds default to the Automation vault (see each
