@@ -347,7 +347,13 @@
         connect_timeout: 10
         delay: 5
         sleep: 5
-        timeout: 120
+        # 120s wasn't quite enough over the nas-sdg CI runner's network
+        # path -- a real update there (2026-08-28, jetkvm-sct-01) came
+        # back at 127s, 7s past the old timeout, after the netbird
+        # restart's P2P/ICE renegotiation genuinely took longer than an
+        # interactive/local run typically sees. The update itself
+        # succeeded; only this wait falsely reported failure.
+        timeout: 180
 
     - name: Wait for the device to return on the new version
       tags: [update]
