@@ -27,17 +27,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Sync Python environment (ansible-core, per pyproject.toml)
+        working-directory: .
+        run: uv sync
+
       - name: Install Ansible collections
-        run: ansible-galaxy collection install -r collections/requirements.yml
+        run: uv run ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Reconcile FreeIPA autopatch
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-autopatch.yml
+        run: op run --env-file .env.ci -- uv run ansible-playbook -i netbox_inventory.yml playbooks/freeipa-autopatch.yml
 
       - name: Reconcile FreeIPA metrics
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-metrics.yml
+        run: op run --env-file .env.ci -- uv run ansible-playbook -i netbox_inventory.yml playbooks/freeipa-metrics.yml
 
       - name: Reconcile FreeIPA rsyslog forwarding
-        run: op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/freeipa-rsyslog.yml
+        run: op run --env-file .env.ci -- uv run ansible-playbook -i netbox_inventory.yml playbooks/freeipa-rsyslog.yml
 
       - name: Reconcile UniFi UDM network config
         # UDM creds default to the Automation vault (see each
@@ -45,7 +49,7 @@ jobs:
         # scoped to nas-overlay only, so this points at a duplicate of the
         # same "UniFi UDM Pro (ansible)" item kept there for CI's sake.
         run: >-
-          op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml
+          op run --env-file .env.ci -- uv run ansible-playbook -i netbox_inventory.yml
           playbooks/unifi-network.yml
           -e unifi_network_dns_record_creds_op_vault=nas-overlay
           -e unifi_network_dhcp_pxe_creds_op_vault=nas-overlay
@@ -72,14 +76,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Sync Python environment (ansible-core, per pyproject.toml)
+        working-directory: .
+        run: uv sync
+
       - name: Install Ansible collections
-        run: ansible-galaxy collection install -r collections/requirements.yml
+        run: uv run ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Check JetKVM netbird versions (report only, no upgrade)
         run: |
           {
             echo '## JetKVM netbird version check'
             echo '```'
-            op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update
+            op run --env-file .env.ci -- uv run ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
