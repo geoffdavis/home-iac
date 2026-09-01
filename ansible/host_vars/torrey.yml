@@ -1,0 +1,19 @@
+---
+# torrey — Raspberry Pi 5 ARM builder (OS config in nix-personal).
+#
+# This repo owns exactly one thing about torrey: its Cloudflare Tunnel
+# ingress. It is never connected to from here — cloudflare_tunnel_ingress
+# runs controller-side — so there are deliberately no ansible_host /
+# ansible_user keys.
+cloudflare_tunnel_ingress_enabled: true
+
+# The Conduit Matrix homeserver (nix-personal#655). HTTP, not HTTPS: the
+# upstream is loopback on torrey and Conduit serves no TLS — Cloudflare
+# terminates it at the edge.
+#
+# This is the ONLY path to that homeserver. Conduit binds 127.0.0.1, so
+# losing this rule does not degrade it to a LAN-only service, it removes
+# it entirely.
+cloudflare_tunnel_ingress_rules:
+  - hostname: matrix.geoffdavis.com
+    service: http://127.0.0.1:6167

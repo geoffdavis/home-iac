@@ -1,0 +1,75 @@
+---
+# cloudflare_tunnel_ingress: keep a Cloudflare Tunnel's ingress rules
+# in sync with what the host actually serves.
+#
+# MIGRATED from the archived ugreen-nas-compose (commit 712da23) on
+# 2026-09-01, when torrey's Matrix homeserver needed an ingress rule and
+# the alternative was another round of hand-rolled curl. Its former
+# companion, scripts/cf-deadman-bootstrap.py, did the one-shot side
+# (tunnel creation, DNS bootstrap, Access app, service token) and was
+# retired with that repo — so tunnel CREATION currently has no tooling and
+# is done by hand. This role owns only the steady-state ingress surface.
+#
+# Runs entirely controller-side (delegate_to: localhost): nothing here
+# touches the host, which is why torrey can be driven by it without ever
+# being an SSH target of this repo.
+#
+# One tunnel per host, named after the host.
+
+# Account-scope identifier. Rarely changes.
+cloudflare_tunnel_ingress_account_id: "fe9683ca8ea37414219e5f444991a2d3"
+
+# 1Password lookup for the Cloudflare API token.
+#
+# NOTE for anyone testing this credential by hand: it does NOT have
+# User > API Tokens > Read, so `/user/tokens/verify` reports it as
+# "Invalid API Token" even though it works fine for everything this role
+# does. Verify it against a real endpoint (a tunnel GET) rather than the
+# verify endpoint. That false negative cost an afternoon on 2026-09-01.
+#
+# The parentheses in the item title are also why this cannot be reached
+# with an `op://` secret reference (op rejects `(`) — the
+# community.general.onepassword lookup takes item/vault/field separately
+# and is unaffected.
+cloudflare_tunnel_ingress_token_op_item: "Cloudflare API Token (ansible)"
+cloudflare_tunnel_ingress_token_op_vault: "Automation"
+cloudflare_tunnel_ingress_token_op_field: "credential"
+
+# Tunnel name. Defaults to inventory_hostname — one tunnel per host,
+# named after the host.
+cloudflare_tunnel_ingress_tunnel_name: "{{ inventory_hostname }}"
+
+# Opt-in per host, matching the unifi_network_* roles' convention in this
+# repo. Default false so adding a host to the play's group does nothing
+# until its ingress rules are actually declared in host_vars.
+cloudflare_tunnel_ingress_enabled: false
+
+# Catchall rule. ALWAYS appended last to the rules list (Cloudflare
+# requires the ingress to end with a `service`-only entry, no
+# hostname — anything that doesn't match prior rules falls here).
+# Override per-host only if you need a different fallback than 404.
+cloudflare_tunnel_ingress_catchall:
+  service: "http_status:404"
+
+# Ordered list of ingress rules (BEFORE the catchall is appended).
+# Each rule is a dict with at minimum:
+#   - hostname: <fqdn>
+#   - service:  <url or special, e.g. tcp://localhost:22, https://localhost:443>
+# Optional per-rule keys (passed through verbatim):
+#   - originRequest: {noTLSVerify: true, httpHostHeader: ..., ...}
+#   - path:          <regex>  (for path-based routing within a hostname)
+#
+# Order matters — Cloudflare matches first-rule-wins per (hostname, path).
+#
+# Empty default = no rules. The role will fail with a clear message if
+# the host has a tunnel but no rules defined (we never want to
+# accidentally wipe an existing tunnel's ingress to just the catchall).
+cloudflare_tunnel_ingress_rules: []
+
+# Safety guard: refuse to PUT an ingress that would leave the host
+# unreachable. When true (default), the role asserts that the rules
+# list is non-empty AND includes at least one rule whose service is
+# something other than http_status:* (i.e. an actual upstream).
+# Set false ONLY when you genuinely want to point the tunnel at
+# nothing-but-404 (rare; usually means the host is being retired).
+cloudflare_tunnel_ingress_require_real_upstream: true
