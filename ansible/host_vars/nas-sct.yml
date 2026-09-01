@@ -1,0 +1,25 @@
+---
+
+# ── Cloudflare Tunnel ingress (cloudflare_tunnel_ingress) ──────────────
+# Captured VERBATIM from the live tunnel on 2026-09-01, when the role was
+# migrated from the archived ugreen-nas-compose. Declared as-is rather
+# than as an ideal: the ugos-* rule is vestigial (it pointed at the
+# UGOS/TrueNAS web UI, which no host has run since the NixOS migrations),
+# but removing it is a deliberate change to make and verify, not a side
+# effect of writing state down for the first time.
+#
+# Do not "tidy" the service URLs. A first guess at these had ssh:// and a
+# uniform https://localhost:443, and all three were wrong — the scheme is
+# tcp://, and each host's second rule differs. Applying that guess would
+# have rewritten live break-glass SSH.
+cloudflare_tunnel_ingress_enabled: true
+cloudflare_tunnel_ingress_rules:
+  # Break-glass SSH. tcp://, not ssh:// — cloudflared proxies the
+  # TCP stream and `cloudflared access ssh` speaks SSH over it.
+  - hostname: ssh-nas-sct.geoffdavis.com
+    service: tcp://localhost:22
+  # Vestigial: the TrueNAS UI port after that host migrated; nothing serves it now.
+  - hostname: ugos-nas-sct.geoffdavis.com
+    service: https://localhost:443
+    originRequest:
+      noTLSVerify: true

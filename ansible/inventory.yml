@@ -15,6 +15,24 @@ all:
           # Hub — reachable on the LAN from the controller.
           ansible_host: 172.29.50.20
 
+    # cloudflare_tunnels: hosts whose Cloudflare Tunnel ingress this repo
+    # reconciles (cloudflare_tunnel_ingress). Membership here grants
+    # nothing on its own — the role is opt-in per host via
+    # cloudflare_tunnel_ingress_enabled in host_vars.
+    #
+    # The role runs entirely controller-side (delegate_to: localhost on
+    # every task), so these entries exist only to carry per-host vars.
+    # Nothing in this group is ever connected to, which is why torrey —
+    # whose OS config lives in nix-personal and which this repo has no
+    # other business with — can appear here without SSH details.
+    cloudflare_tunnels:
+      hosts:
+        nas-sdg:
+        nas-sct:
+        nas-cin:
+        torrey:
+        pi-talos-home:
+
     ipa_replicas:
       # FreeIPA replica VMs — libvirt/KVM guests on the NixOS hosts,
       # provisioned by the nixos_freeipa_vm role (playbooks/nixos-freeipa-vm.yml).

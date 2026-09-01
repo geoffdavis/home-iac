@@ -1,0 +1,19 @@
+---
+# pi-talos-home — the Talos k8s cluster's tunnel. Cluster config lives in
+# pi-talos-home-ops; this repo owns only the tunnel ingress.
+#
+# Controller-side only, so no ansible_host / ansible_user.
+cloudflare_tunnel_ingress_enabled: true
+
+# Captured verbatim from the live tunnel on 2026-09-01. Upstreams are
+# in-cluster Service DNS names, resolved by cloudflared running inside the
+# cluster — not localhost.
+cloudflare_tunnel_ingress_rules:
+  - hostname: geoffdavis.com
+    service: http://geoffdavis-website-prod.geoffdavis-website.svc.cluster.local
+  - hostname: www.geoffdavis.com
+    service: http://geoffdavis-website-prod.geoffdavis-website.svc.cluster.local
+    originRequest: {}
+  - hostname: flux-webhook-home.geoffdavis.com
+    service: http://webhook-receiver.flux-system.svc.cluster.local
+    originRequest: {}

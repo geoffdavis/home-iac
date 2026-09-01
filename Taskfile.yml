@@ -103,6 +103,7 @@ tasks:
         playbooks/unifi-network.yml
         playbooks/netbox-import.yml
         playbooks/jetkvm-netbird-update.yml
+        playbooks/cloudflare-tunnel.yml
 
   ansible:run:
     desc: >-

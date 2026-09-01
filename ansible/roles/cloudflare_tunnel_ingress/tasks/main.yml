@@ -1,0 +1,244 @@
+---
+# cloudflare_tunnel_ingress: idempotent ingress-rule sync for an
+# existing Cloudflare Tunnel. Runs entirely controller-side
+# (delegate_to: localhost on every task) — there's nothing host-local
+# to do here; the tunnel's ingress lives in Cloudflare's edge.
+#
+# Idempotency: GET current ingress, diff against desired, PUT only on
+# drift. Steady-state runs report changed=0.
+#
+# Why not extend cf-deadman-bootstrap.py instead: that script is the
+# one-shot bootstrap (tunnel create, DNS bootstrap, Access app, service
+# token). This role is for ongoing maintenance — slots into the
+# Ansible role pipeline so per-host inventory drives ingress changes,
+# `--check` gives a dry-run diff preview, and host migrations
+# (UGOS:9443 → TrueNAS:443) just need a host_vars edit instead of
+# script invocations.
+
+- name: Skip hosts that have not opted in
+  ansible.builtin.meta: end_host
+  when: not (cloudflare_tunnel_ingress_enabled | bool)
+
+- name: Pre-flight — assert rules list is non-empty
+  ansible.builtin.assert:
+    that:
+      - cloudflare_tunnel_ingress_rules | length > 0
+    fail_msg: |
+      cloudflare_tunnel_ingress_rules is empty for {{ inventory_hostname }}.
+      The role won't PUT an ingress containing only the catchall — that would
+      leave the tunnel pointed at nothing-but-404 (probably not intended;
+      usually means a host_vars file is missing or the variable name is
+      typo'd).
+
+      If you genuinely want to retire this tunnel's routing, set
+      `cloudflare_tunnel_ingress_require_real_upstream: false` AND
+      explicitly define `cloudflare_tunnel_ingress_rules: []`.
+  when: cloudflare_tunnel_ingress_require_real_upstream | bool
+
+- name: Pre-flight — assert at least one real (non-404) upstream
+  ansible.builtin.assert:
+    that:
+      - cloudflare_tunnel_ingress_rules
+        | selectattr('service', 'defined')
+        | rejectattr('service', 'match', '^http_status:')
+        | list
+        | length > 0
+    fail_msg: |
+      cloudflare_tunnel_ingress_rules for {{ inventory_hostname }} contains
+      no real upstreams (every rule is http_status:*). The role refuses to
+      PUT this to avoid silently bricking the tunnel. Set
+      `cloudflare_tunnel_ingress_require_real_upstream: false` if this is
+      intentional (e.g. host is being decommissioned).
+  when: cloudflare_tunnel_ingress_require_real_upstream | bool
+
+# Fetch the API token per-host. `set_fact` with `run_once: true` would
+# only define `_cf_api_token` on the first host in the play (facts are
+# host-scoped in Ansible — `run_once` controls execution count but
+# not fact-scope), so subsequent hosts would fail with an undefined-var
+# error in the very next uri call. The 1P CLI session-caches its auth,
+# so per-host lookups don't multiply the biometric-prompt count; the
+# extra cost is a handful of subprocess invocations of `op`.
+- name: Fetch Cloudflare API token from 1Password
+  ansible.builtin.set_fact:
+    _cf_api_token: >-
+      {{ lookup('community.general.onepassword',
+                cloudflare_tunnel_ingress_token_op_item,
+                vault=cloudflare_tunnel_ingress_token_op_vault,
+                field=cloudflare_tunnel_ingress_token_op_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Look up Cloudflare tunnel ID by name
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_tunnel_ingress_account_id }}/cfd_tunnel?name={{ cloudflare_tunnel_ingress_tunnel_name }}&is_deleted=false"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _cf_api_token }}"
+    status_code: 200
+    return_content: true
+  register: _cf_tunnel_list
+  delegate_to: localhost
+  become: false
+  # Read-only, so run it even under --check. Without this the task is
+  # skipped, `_cf_tunnel_list` is an empty dict, and the very next task
+  # fails with "object of type 'dict' has no attribute 'json'" — which
+  # makes --check useless exactly when you most want a dry run. The same
+  # defect is documented for unifi_network_dhcp_pxe in the personal-notes
+  # topology note; this role inherited it from the same lineage.
+  check_mode: false
+  # Don't print the token-bearing request body / headers in verbose
+  # output. The response itself contains tunnel IDs (not secrets) but
+  # no_log on the request is the simpler defensive choice.
+  no_log: true
+
+- name: Filter to active (non-deleted) tunnels matching the name exactly
+  # The list endpoint can return tunnels whose name CONTAINS our query
+  # under some account configurations; pin to exact-name match. Also
+  # skip tunnels that have a deleted_at timestamp (soft-deleted).
+  ansible.builtin.set_fact:
+    _cf_matching_tunnels: >-
+      {{ _cf_tunnel_list.json.result
+         | selectattr('name', 'equalto', cloudflare_tunnel_ingress_tunnel_name)
+         | rejectattr('deleted_at', 'defined')
+         | list
+         + _cf_tunnel_list.json.result
+         | selectattr('name', 'equalto', cloudflare_tunnel_ingress_tunnel_name)
+         | selectattr('deleted_at', 'none')
+         | list }}
+
+- name: Deduplicate matching tunnels (some return paths overlap)
+  ansible.builtin.set_fact:
+    _cf_matching_tunnels: "{{ _cf_matching_tunnels | unique }}"
+
+- name: Assert exactly one matching tunnel
+  ansible.builtin.assert:
+    that:
+      - _cf_tunnel_list.json.success | default(false)
+      - _cf_matching_tunnels | length == 1
+    fail_msg: |
+      Expected exactly one active Cloudflare tunnel named
+      '{{ cloudflare_tunnel_ingress_tunnel_name }}', found
+      {{ _cf_matching_tunnels | length }}.
+
+      If zero: the tunnel does not exist yet. Tunnel CREATION has no
+      tooling in this repo — cf-deadman-bootstrap.py was retired with
+      ugreen-nas-compose — so create it by hand first:
+        POST /accounts/<acct>/cfd_tunnel {"name":"<host>","config_src":"cloudflare"}
+      See the "Work with Cloudflare Tunnels" note in personal-notes.
+
+      If more than one: there is a duplicate with the same name (one
+      soft-deleted, one active?). Inspect via
+      GET /accounts/<acct>/cfd_tunnel?name=<host> and delete the unwanted
+      one — the tunnel list endpoint, not a dashboard page.
+
+- name: Note the tunnel ID
+  ansible.builtin.set_fact:
+    _cf_tunnel_id: "{{ _cf_matching_tunnels[0].id }}"
+
+- name: Get current ingress configuration
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_tunnel_ingress_account_id }}/cfd_tunnel/{{ _cf_tunnel_id }}/configurations"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _cf_api_token }}"
+    status_code: 200
+    return_content: true
+  register: _cf_current_config
+  delegate_to: localhost
+  become: false
+  no_log: true
+  # Read-only; same reasoning as the tunnel lookup above. This one also
+  # supplies the current-vs-desired diff, which IS the point of --check.
+  check_mode: false
+
+- name: Compute the desired ingress (rules + catchall appended last)
+  ansible.builtin.set_fact:
+    _cf_desired_ingress: "{{ cloudflare_tunnel_ingress_rules + [cloudflare_tunnel_ingress_catchall] }}"
+
+- name: Capture current ingress + warp-routing for the diff + preservation
+  ansible.builtin.set_fact:
+    _cf_current_ingress: "{{ _cf_current_config.json.result.config.ingress | default([]) }}"
+    _cf_current_warp_routing: "{{ _cf_current_config.json.result.config['warp-routing'] | default({'enabled': false}) }}"
+
+- name: Decide if a PUT is needed
+  # Compare ordered lists by value (Ansible's `==` on lists is
+  # element-wise + dict-value-aware). If Cloudflare's GET returns
+  # the dict keys in a different order than our desired, that's fine
+  # — Python dict equality is value-based.
+  ansible.builtin.set_fact:
+    _cf_ingress_needs_update: "{{ _cf_current_ingress != _cf_desired_ingress }}"
+
+- name: Show ingress diff (especially useful in --check mode)
+  ansible.builtin.debug:
+    msg:
+      - "Tunnel: {{ cloudflare_tunnel_ingress_tunnel_name }} (id: {{ _cf_tunnel_id }})"
+      - "Current ingress: {{ _cf_current_ingress }}"
+      - "Desired ingress: {{ _cf_desired_ingress }}"
+      - "warp-routing (preserved): {{ _cf_current_warp_routing }}"
+      - "Update needed: {{ _cf_ingress_needs_update }}"
+
+- name: PUT updated ingress configuration
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_tunnel_ingress_account_id }}/cfd_tunnel/{{ _cf_tunnel_id }}/configurations"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _cf_api_token }}"
+    body_format: json
+    body:
+      config:
+        ingress: "{{ _cf_desired_ingress }}"
+        # Preserve whatever warp-routing was in the current config —
+        # the role doesn't manage it, so don't accidentally clear it.
+        warp-routing: "{{ _cf_current_warp_routing }}"
+    status_code: 200
+    return_content: true
+  register: _cf_put_result
+  when: _cf_ingress_needs_update | bool
+  delegate_to: localhost
+  become: false
+  # The PUT response includes the new config; not secret, but no_log
+  # keeps the bearer token out of any verbose-mode dump of the request.
+  no_log: true
+  changed_when: _cf_ingress_needs_update | bool
+
+- name: Verify by re-querying ingress
+  # Confirms Cloudflare actually accepted the PUT — defends against
+  # the case where the API returns 200 but persists nothing (unlikely
+  # but cheap to verify).
+  #
+  # Skipped in --check mode: `ansible.builtin.uri` is a no-op for
+  # non-GET requests under check_mode, so the PUT above doesn't
+  # actually apply. If we then GET + assert against `_cf_desired_ingress`,
+  # the assert necessarily fails because the current ingress was the
+  # drift we set out to fix. Gating verify+assert on `not ansible_check_mode`
+  # keeps check mode as a clean dry-run diff preview (just the
+  # diff debug task above shows current-vs-desired) instead of a
+  # forced failure whenever drift exists.
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_tunnel_ingress_account_id }}/cfd_tunnel/{{ _cf_tunnel_id }}/configurations"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _cf_api_token }}"
+    status_code: 200
+    return_content: true
+  register: _cf_verify
+  when:
+    - _cf_ingress_needs_update | bool
+    - not ansible_check_mode
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Assert the new ingress took effect
+  ansible.builtin.assert:
+    that:
+      - (_cf_verify.json.result.config.ingress | default([])) == _cf_desired_ingress
+    fail_msg: |
+      PUT returned 200 but the subsequent GET shows different ingress.
+      This is exactly the failure the re-GET exists to catch; do not
+      trust the write echo. Inspect with
+      GET /accounts/<acct>/cfd_tunnel/<id>/configurations.
+  when:
+    - _cf_ingress_needs_update | bool
+    - not ansible_check_mode

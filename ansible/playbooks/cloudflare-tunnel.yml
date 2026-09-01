@@ -1,0 +1,33 @@
+---
+# playbooks/cloudflare-tunnel.yml — reconcile Cloudflare Tunnel ingress
+# rules for every host that declares them.
+#
+# Migrated from the archived ugreen-nas-compose (role commit 712da23) on
+# 2026-09-01. Until then the Cloudflare estate was the one shared control
+# plane with no repo behind it at all — see the "Cloudflare state belongs
+# in home-iac" section of the NAS Break-Glass Access note, and
+# Agent Access and Deploy Coordination §5, which treats netbird, the UDM
+# and Cloudflare as the same class of gap.
+#
+# Every task delegates to localhost — the ingress lives at Cloudflare, not
+# on the host — so this never connects to any inventory host and needs no
+# SSH reachability. That is what lets it manage torrey, whose OS config
+# lives in nix-personal and which this repo otherwise has no business with.
+#
+# Opt-in per host via cloudflare_tunnel_ingress_enabled in host_vars.
+# Tunnel CREATION is still manual: cf-deadman-bootstrap.py retired with
+# ugreen-nas-compose and has no successor. This role only owns steady
+# state, and fails with instructions if the named tunnel does not exist.
+#
+# Credentials: 1Password vault "Automation" > "Cloudflare API Token
+# (ansible)". Note that credential lacks User > API Tokens > Read, so
+# `/user/tokens/verify` calls it invalid while it works fine here — test
+# it against a real endpoint, never the verify endpoint.
+#
+#   uv run ansible-playbook playbooks/cloudflare-tunnel.yml --check
+#   uv run ansible-playbook playbooks/cloudflare-tunnel.yml --limit torrey
+- name: Reconcile Cloudflare Tunnel ingress rules
+  hosts: cloudflare_tunnels
+  gather_facts: false
+  roles:
+    - cloudflare_tunnel_ingress
