@@ -1,0 +1,91 @@
+# playbooks/jetkvm-macros.yml — reconcile the keyboard_macros set on the
+# JetKVM OOB consoles.
+#
+# Usage:
+#   task ansible:run -- playbooks/jetkvm-macros.yml
+#   task ansible:run -- playbooks/jetkvm-macros.yml --limit jetkvm-sdg-02
+#   task ansible:run -- playbooks/jetkvm-macros.yml --check
+#     # real connection, real (read-only) on-device config read, reports
+#     # "CHANGE NEEDED" / "already in sync" per console, writes nothing.
+#     # Unlike jetkvm-netbird-update.yml, --check IS the dry-run here: the
+#     # role's read-only raw tasks carry `check_mode: false` so they run for
+#     # real, and the whole write half is guarded on `not ansible_check_mode`.
+#   task ansible:run -- playbooks/jetkvm-macros.yml -e jetkvm_macros_reboot=false
+#     # write the config but leave the console running the old macro set
+#     # (see below — the config is only read at app startup).
+#
+# Why this play exists at all: the JetKVM virtual keyboard TAPS keys and
+# does not hold modifiers, so it physically cannot compose Ctrl+Alt+F12 or
+# Alt+SysRq+W (jetkvm/kvm#211, #401). Typing the chord into the operator's
+# own browser fails too — their compositor grabs it first. A macro is the
+# only mechanism on the device that genuinely holds a modifier, because
+# KeyboardMacroStep carries Keys and Modifiers as separate fields. And `/`
+# is reflashed by every firmware update, so a hand-installed set is not
+# durable; managing it here is what makes it reproducible.
+#
+# Applying needs a REBOOT of the console (not of the NAS behind it):
+# jetkvm_app calls LoadConfig() once at startup behind an
+# `if config != nil { return }` guard, exposes no reload RPC, and its
+# supervisor does not respawn a killed child — so writing the file alone
+# changes nothing until the device restarts. The role does that, one
+# console at a time.
+#
+# Offline consoles are skipped, not failed, by two independent mechanisms:
+#   1. tasks/netbox_status_gate.yml — the same allowlist gate the netbird
+#      play uses (only NetBox status active/staged is targeted). This is
+#      what keeps a fleet-wide run quiet while a whole site is down.
+#   2. an explicit transport probe below — the gate carries no `status` at
+#      all under the static inventory fallback (`ansible:run-static`), and
+#      NetBox can also be stale. Belt and braces, because the whole point
+#      of a console is that you reach for it when things are already broken.
+# As of 2026-09-10 that means jetkvm-cin-01 (Cincinnati site offline
+# indefinitely) is skipped; it picks the set up on its next reachable run.
+#
+# serial: 1 so only one console is mid-reboot at a time — these are the
+# out-of-band path to their hosts, and losing all of them simultaneously
+# because of a bad config is exactly the failure this play must not cause.
+---
+- name: Reconcile the keyboard macro set on the JetKVM OOB consoles
+  hosts: oob_kvm
+  gather_facts: false
+  serial: 1
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
+
+    # ignore_unreachable + register, rather than letting the role's first
+    # raw task fail: an unreachable console under serial: 1 without
+    # any_errors_fatal doesn't abort the run, it just fails loudly every
+    # single time — noisy enough to bury a real new failure among expected
+    # noise (the same reasoning as the NetBox gate's own header).
+    #
+    # `raw`, NOT wait_for_connection. wait_for_connection looks like the
+    # right tool and is not: it proves the connection by running the `ping`
+    # MODULE, which needs a python interpreter on the target. These devices
+    # have none (confirmed live 2026-09-10 — `ansible -m ping` against
+    # jetkvm-sdg-02 gives "The module interpreter '/usr/bin/python3' was not
+    # found", rc 127), so wait_for_connection can never succeed here: it
+    # burns its whole timeout and then fails, on a device that was answering
+    # SSH the entire time. `raw` is the only probe that means anything on
+    # this device class.
+    - name: Probe the console's SSH transport
+      check_mode: false
+      ansible.builtin.raw: echo reachable
+      register: _jetkvm_reachable
+      changed_when: false
+      ignore_unreachable: true
+      failed_when: false
+
+    - name: Note that this console is being skipped as unreachable
+      when: _jetkvm_reachable.unreachable | default(false)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is unreachable — skipping. It will pick up
+          the managed macro set on the next run that reaches it.
+
+    - name: Skip unreachable consoles
+      when: _jetkvm_reachable.unreachable | default(false)
+      ansible.builtin.meta: end_host
+
+  roles:
+    - jetkvm_macros
