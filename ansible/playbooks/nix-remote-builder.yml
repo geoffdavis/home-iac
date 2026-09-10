@@ -1,0 +1,29 @@
+---
+# Provision the fleet's non-NixOS nix remote builders (group `nix_builders`).
+#
+# Today that is amd-halo alone — the AMD Ryzen AI Developer Platform box.
+# The NixOS builders (nas-sdg, nas-sct, torrey, tourmaline) are configured
+# declaratively in the nix-personal repo instead; this play exists for the
+# hosts nix cannot configure itself.
+#
+# The CLIENT half — buildMachines entries, speedFactor, the
+# /etc/nix/builder_ed25519 credential — lives in nix-personal
+# (modules/talos-builders.nix is the pattern for a non-NixOS builder). This
+# repo only owns the endpoint.
+#
+# Usage (static inventory: amd-halo is not a NetBox-tagged device):
+#   task ansible:run-static -- playbooks/nix-remote-builder.yml
+#
+# Dry run:
+#   task ansible:run-static -- playbooks/nix-remote-builder.yml --check --diff
+#
+# Idempotent; safe to re-run. gather_facts stays TRUE — the role gates on
+# ansible_pkg_mgr/ansible_service_mgr, because this platform reports its own
+# product name as ansible_os_family rather than "Debian".
+
+- name: Nix ssh-ng remote build endpoints (non-NixOS hosts)
+  hosts: nix_builders
+  become: true
+  gather_facts: true
+  roles:
+    - nix_remote_builder

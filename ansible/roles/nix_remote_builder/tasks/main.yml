@@ -1,0 +1,307 @@
+---
+# nix_remote_builder — provision a non-NixOS box as an ssh-ng remote build
+# endpoint for the nix fleet. See README.md for the design; this file only
+# carries the notes that belong next to a specific task.
+
+# --- Distro sanity -------------------------------------------------------
+# amd-halo runs "AMD Ryzen AI Developer Platform 1 (rex)" — Debian-derived
+# (ID_LIKE=debian) but NOT Debian as far as Ansible is concerned:
+#
+#   ansible_distribution        = "AMD Ryzen AI Developer Platform"
+#   ansible_os_family           = "AMD Ryzen AI Developer Platform"   <-- not "Debian"
+#   ansible_distribution_release = "rex"
+#   ansible_distribution_major_version = "1"
+#   ansible_pkg_mgr             = "apt"                               <-- correct
+#
+# So `when: ansible_os_family == "Debian"` is FALSE here and any codename
+# map keyed on bookworm/trixie misses. Gate on ansible_pkg_mgr, which
+# Ansible derives independently and gets right.
+- name: Assert a systemd + apt host (rex reports its own os_family, not Debian)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.service_mgr == "systemd"
+      - ansible_facts.pkg_mgr == "apt"
+    fail_msg: >-
+      nix_remote_builder expects a systemd host with apt
+      (got service_mgr={{ ansible_facts.service_mgr }},
+      pkg_mgr={{ ansible_facts.pkg_mgr }}). Note that on the "rex" platform
+      ansible_os_family is NOT "Debian" — do not add a check on it.
+    quiet: true
+
+# --- Determinate Nix -----------------------------------------------------
+- name: Install Determinate Nix
+  when: nix_remote_builder_install_nix | bool
+  block:
+    - name: Check whether nix is already installed
+      become: true
+      ansible.builtin.stat:
+        path: "{{ nix_remote_builder_install_receipt }}"
+      register: _nix_receipt
+      changed_when: false
+
+    - name: Fetch the pinned Determinate nix-installer
+      become: true
+      ansible.builtin.get_url:
+        url: "{{ nix_remote_builder_installer_url }}"
+        dest: /usr/local/bin/nix-installer
+        mode: "0755"
+        owner: root
+        group: root
+      # Gated on the receipt, not just on `creates`: re-downloading a 75 MB
+      # binary on every converge is pure noise, and the installer keeps its
+      # own copy at /nix/nix-installer once it has run.
+      when: not _nix_receipt.stat.exists
+
+    - name: Run the installer (Determinate Nix, despite the `install linux` subcommand)
+      become: true
+      ansible.builtin.command:
+        # `install linux` is the subcommand name; what it installs is
+        # DETERMINATE Nix — determinate-nixd, its own nix.conf, and the
+        # nix.custom.conf split this role writes into.
+        cmd: /usr/local/bin/nix-installer install linux --init systemd --no-confirm
+        creates: "{{ nix_remote_builder_install_receipt }}"
+
+- name: Assert the nix daemon binary the forced command points at exists
+  become: true
+  ansible.builtin.stat:
+    path: "{{ nix_remote_builder_forced_command.split(' ') | first }}"
+  register: _nix_daemon_bin
+  failed_when: not _nix_daemon_bin.stat.exists
+  changed_when: false
+
+# --- The builder identity ------------------------------------------------
+- name: Create the builder group
+  become: true
+  ansible.builtin.group:
+    name: "{{ nix_remote_builder_group }}"
+    system: true
+    state: present
+
+- name: Create the builder user
+  become: true
+  ansible.builtin.user:
+    name: "{{ nix_remote_builder_user }}"
+    group: "{{ nix_remote_builder_group }}"
+    home: "{{ nix_remote_builder_home }}"
+    # A real shell, NOT nologin: sshd runs the forced command through the
+    # login shell, so nologin breaks every remote build at connect time.
+    shell: "{{ nix_remote_builder_shell }}"
+    comment: "{{ nix_remote_builder_comment }}"
+    system: true
+    create_home: true
+    password: "!"
+    # Deliberately no `uid:` — the account already exists as 997 on
+    # amd-halo and the module leaves an existing uid alone; pinning a
+    # number here would only create a collision hazard on the next box.
+    state: present
+
+- name: Lock down the builder home directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ nix_remote_builder_home }}"
+    state: directory
+    owner: "{{ nix_remote_builder_user }}"
+    group: "{{ nix_remote_builder_group }}"
+    mode: "0700"
+
+- name: Create the builder .ssh directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ nix_remote_builder_home }}/.ssh"
+    state: directory
+    owner: "{{ nix_remote_builder_user }}"
+    group: "{{ nix_remote_builder_group }}"
+    mode: "0700"
+
+- name: Install the pinned client keys
+  become: true
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "{{ nix_remote_builder_home }}/.ssh/authorized_keys"
+    owner: "{{ nix_remote_builder_user }}"
+    group: "{{ nix_remote_builder_group }}"
+    mode: "0600"
+  # Templated as a whole file rather than added key-by-key with
+  # ansible.posix.authorized_key: this file is the endpoint's entire access
+  # list, so it should be exactly the declared set — a key REMOVED from the
+  # defaults must disappear from the box, which per-key management would
+  # never do.
+
+- name: Enable lingering for the builder user
+  become: true
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ nix_remote_builder_user }}"
+    creates: "/var/lib/systemd/linger/{{ nix_remote_builder_user }}"
+  when: nix_remote_builder_enable_linger | bool
+
+# --- nix.custom.conf -----------------------------------------------------
+# /etc/nix/nix.conf is Determinate-owned ("do not modify! this file will be
+# replaced!") and `!include`s nix.custom.conf, which the installer also
+# seeds with a two-line header. A marked block keeps our settings separable
+# from both.
+#
+# Ordering note: nix.conf sets `max-jobs = auto` BEFORE the !include, and
+# nix takes the last assignment wins — so the block below genuinely
+# overrides it. Verify rather than assume after any Determinate upgrade
+# that moves the include line.
+- name: Manage the fleet builder block in nix.custom.conf
+  become: true
+  ansible.builtin.blockinfile:
+    path: "{{ nix_remote_builder_custom_conf }}"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: nix_remote_builder"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+    block: "{{ lookup('ansible.builtin.template', 'nix-custom-conf-block.j2') }}"
+  notify: Restart nix-daemon
+
+# --- Build capping -------------------------------------------------------
+- name: Ensure the nix-daemon drop-in directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ nix_remote_builder_capping_dropin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nix_remote_builder_capping | bool
+
+- name: Install the nix-daemon build-capping drop-in
+  become: true
+  ansible.builtin.template:
+    src: build-capping.conf.j2
+    dest: "{{ nix_remote_builder_capping_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: nix_remote_builder_capping | bool
+  # daemon-reload alone is enough: systemd re-applies cgroup resource
+  # attributes to a RUNNING unit on reload, so the quota takes effect
+  # without bouncing the daemon (and without interrupting an in-flight
+  # build or anything else on this box).
+  notify: Reload systemd
+
+- name: Remove the build-capping drop-in when capping is disabled
+  become: true
+  ansible.builtin.file:
+    path: "{{ nix_remote_builder_capping_dropin }}"
+    state: absent
+  when: not (nix_remote_builder_capping | bool)
+  notify: Reload systemd
+
+# --- sshd PerSourcePenalties ---------------------------------------------
+# Probe for the option rather than parsing a version string: `sshd -T`
+# prints every effective keyword, so its presence is a direct capability
+# answer and survives vendor version suffixes like "10.0p2 Debian-7+deb13u4".
+- name: Probe sshd for PerSourcePenalties support
+  become: true
+  ansible.builtin.shell:
+    cmd: set -o pipefail && /usr/sbin/sshd -T 2>/dev/null | grep -c '^persourcepenalties '
+    executable: /bin/bash
+  register: _sshd_penalty_probe
+  changed_when: false
+  failed_when: false
+  # Read-only, so run it under --check too; otherwise a dry run silently
+  # skips the sshd drop-in and reports no change where there is one.
+  check_mode: false
+  when: nix_remote_builder_sshd_penalties | bool
+
+- name: Disable the noauth PerSourcePenalty class (nix's probes are not abuse)
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ nix_remote_builder_sshd_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # `noauth:0` only. NOT PerSourcePenaltyExemptList, which nas-sdg uses:
+    # that disables every penalty class — authfail included — for a whole
+    # address range, so any host on the overlay could brute-force freely.
+    # This disables exactly the class nix trips and leaves the rest armed.
+    content: |
+      # Managed by ansible (home-iac roles/nix_remote_builder). Do not edit.
+      #
+      # OpenSSH 9.8+ penalises a source IP that opens connections and closes
+      # them without authenticating. That is normal nix remote-build client
+      # behaviour, not an attack. Observed live on this fleet: it locked
+      # windansea out of tourmaline entirely ("srclimit_penalise: ...
+      # activating ipv4 penalty ... connections without attempting
+      # authentication").
+      #
+      # Every other class stays armed — repeated authentication FAILURES are
+      # still an attack signal and are still penalised, for every source.
+      PerSourcePenalties noauth:0
+  when:
+    - nix_remote_builder_sshd_penalties | bool
+    - (_sshd_penalty_probe.stdout | default('0') | trim | int) > 0
+  notify: Reload sshd
+
+- name: Remove the sshd drop-in when penalties handling is disabled
+  become: true
+  ansible.builtin.file:
+    path: "{{ nix_remote_builder_sshd_dropin }}"
+    state: absent
+  when: not (nix_remote_builder_sshd_penalties | bool)
+  notify: Reload sshd
+
+# Settings whose failure modes are silent must be verified in the same run
+# that sets them, so flush before asserting.
+- name: Apply pending restarts before verifying
+  ansible.builtin.meta: flush_handlers
+
+# --- Verification --------------------------------------------------------
+- name: Verify convergence
+  # Skipped under --check: nothing has been written, so these would assert
+  # against the pre-run state and fail every dry run.
+  when:
+    - nix_remote_builder_verify | bool
+    - not ansible_check_mode
+  block:
+    - name: Read the effective nix configuration
+      become: true
+      ansible.builtin.command:
+        cmd: "{{ nix_remote_builder_forced_command.split(' ') | first | dirname }}/nix config show"
+      register: _nix_config_show
+      changed_when: false
+
+    - name: Assert the builder user is trusted
+      # Without this the endpoint authenticates fine and then refuses every
+      # build — a failure that reads like a client-side problem.
+      #
+      # Token comparison, not a regex: a Jinja string literal processes
+      # backslash escapes, so a `\b` word boundary written here silently
+      # becomes a literal backspace character and the match never fires.
+      vars:
+        _trusted_users: >-
+          {{ _nix_config_show.stdout_lines
+             | select('match', 'trusted-users ')
+             | first | default('') | split() }}
+      ansible.builtin.assert:
+        that:
+          - nix_remote_builder_user in _trusted_users
+        fail_msg: >-
+          {{ nix_remote_builder_user }} is not in nix's trusted-users.
+          Remote builds will be refused. Effective value: {{ _trusted_users }}
+        quiet: true
+
+    - name: Read the daemon's effective resource limits
+      become: true
+      ansible.builtin.command:
+        cmd: systemctl show nix-daemon.service -p CPUQuotaPerSecUSec -p AllowedCPUs -p CPUWeight -p MemoryHigh
+      register: _nix_daemon_props
+      changed_when: false
+      when: nix_remote_builder_capping | bool
+
+    - name: Assert the CPU quota actually applied
+      # A mis-spelled or unsupported cgroup property is accepted silently by
+      # systemd and simply does nothing, so the drop-in existing proves
+      # nothing on its own.
+      ansible.builtin.assert:
+        that:
+          - _nix_daemon_props.stdout is not search('CPUQuotaPerSecUSec=infinity')
+        fail_msg: >-
+          nix-daemon.service has no CPU quota after reload — builds are
+          uncapped and can starve the AI workload. Got:
+          {{ _nix_daemon_props.stdout_lines }}
+        quiet: true
+      when: nix_remote_builder_capping | bool

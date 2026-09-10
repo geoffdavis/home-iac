@@ -1,0 +1,28 @@
+#
+# Fleet remote-build endpoint settings. /etc/nix/nix.conf is Determinate-owned
+# and `!include`s this file; the include sits AFTER nix.conf's own
+# `max-jobs = auto`, and nix takes the last assignment, so the values here win.
+#
+{% if nix_remote_builder_trust_user | bool %}
+# ssh-ng injects derivations and closures into this store, which an untrusted
+# user may not do. Without this the endpoint authenticates and then refuses
+# every build. `extra-` so root keeps its trust without restating a list we
+# do not own.
+extra-trusted-users = {{ nix_remote_builder_user }}
+{% endif %}
+# Tuning under the systemd CPUQuota, not a substitute for it: a trusted
+# client can override these over the worker protocol, and one greedy build
+# system can saturate the box regardless of max-jobs.
+max-jobs = {{ nix_remote_builder_max_jobs }}
+cores = {{ nix_remote_builder_cores }}
+{% if nix_remote_builder_extra_platforms %}
+# The PLATFORM half. Advertising a platform without its matching
+# system-feature yields a builder that accepts dispatch and then refuses
+# every build of that platform — see nix-personal hosts/tourmaline/builder.nix.
+extra-platforms = {{ nix_remote_builder_extra_platforms | join(' ') }}
+{% endif %}
+{% if nix_remote_builder_system_features %}
+# The FEATURE half. `extra-` because nixpkgs computes a default set
+# dynamically; restating it would silently drop future upstream additions.
+extra-system-features = {{ nix_remote_builder_system_features | join(' ') }}
+{% endif %}

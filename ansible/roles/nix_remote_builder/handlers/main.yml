@@ -1,0 +1,25 @@
+---
+# Reload, never restart, sshd: a restart drops nothing on Debian's ssh.service
+# in practice, but a reload is strictly safer and this box has AI workloads
+# reached over ssh that must not be disturbed.
+- name: Reload sshd
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ nix_remote_builder_sshd_service }}"
+    state: reloaded
+
+# daemon-reload re-applies cgroup resource attributes to the RUNNING
+# nix-daemon.service, so the capping drop-in takes effect with no restart.
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+# nix.custom.conf is read at daemon start, so a config change genuinely
+# needs a bounce. This interrupts in-flight BUILDS only; nothing else on the
+# box depends on it, and it does not touch the AI workloads.
+- name: Restart nix-daemon
+  become: true
+  ansible.builtin.systemd_service:
+    name: nix-daemon.service
+    state: restarted
