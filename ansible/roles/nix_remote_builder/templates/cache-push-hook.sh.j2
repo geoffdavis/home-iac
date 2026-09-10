@@ -1,0 +1,79 @@
+#!/bin/bash
+{{ ansible_managed | comment }}
+#
+# Nix post-build-hook: publish this host's build outputs to nas-sdg's
+# file-based binary cache.
+#
+# A port of nix-common's modules/cache-push.nix, which is a NixOS/darwin
+# module and so cannot apply to this Debian-derived box. Everything below
+# that looks like a magic number is load-bearing; the reasoning is in that
+# module's header and is summarised at each line here.
+#
+# Note what is NOT in the --to url: no `remote-store=file:///tank/...`
+# naming the destination. The destination is pinned SERVER-SIDE, in the
+# forced command on nix-cache-push's authorized_keys entry on nas-sdg. That
+# is deliberate — this credential is handed to every builder in the fleet,
+# and a credential shared that widely should not also get to choose where
+# its writes land.
+#
+# --no-check-sigs: this host has no signing key to check against. Signing
+# happens server-side on ingest into the file cache, not here.
+set -eu
+
+# Nothing realised, nothing to publish.
+[ -n "${OUT_PATHS:-}" ] || exit 0
+
+rc=0
+
+# THE WALL-CLOCK TIMEOUT IS A BACKSTOP, NOT THE STALL DETECTOR. Three layers
+# bound a push, in increasing severity, and this one must sit ABOVE the
+# others or it preempts them:
+#   - ConnectTimeout {{ nix_remote_builder_cache_push_connect_timeout }}                       unreachable host, ~{{ nix_remote_builder_cache_push_connect_timeout }}s
+#   - ServerAliveInterval {{ nix_remote_builder_cache_push_alive_interval }} x CountMax {{ nix_remote_builder_cache_push_alive_count }}         stalled connection, ~{{ nix_remote_builder_cache_push_alive_interval * nix_remote_builder_cache_push_alive_count }}s
+#   - this timeout ({{ nix_remote_builder_cache_push_timeout }}s)                    pathological hang only
+# Both of the first two live in the ssh alias this hook connects through.
+#
+# A fixed wall-clock value is a poor instrument for "too slow" — it cannot
+# tell stalled from merely large. An earlier 30s here was a THROUGHPUT GATE
+# in disguise: whether a path landed depended on its size against the
+# current link speed, so a 354 MiB path squeaked through often enough that
+# nobody investigated and failed often enough never to persist.
+#
+# --kill-after={{ nix_remote_builder_cache_push_kill_after }} IS NOT DECORATION. Plain `timeout N` sends SIGTERM
+# and then waits FOREVER, so against a child that ignores it the "hard
+# bound" bounds nothing. nas-sdg's sibling hook lacked it: on 2026-08-16
+# four of its pushes wedged in futex_do_wait, shrugged off SIGTERM, and were
+# still alive 4.4 hours later — each holding a shared /nix/var/nix/gc.lock,
+# which starved GC until the host hit 100% disk and every deploy to it hung.
+# This hook has the same shape and the same blast radius (it BLOCKS the
+# build), so it gets the same escalation.
+#
+# $OUT_PATHS is deliberately UNQUOTED: it is a space-separated list and must
+# word-split into separate arguments.
+# shellcheck disable=SC2086
+{{ nix_remote_builder_timeout_bin }} \
+  --kill-after={{ nix_remote_builder_cache_push_kill_after }} {{ nix_remote_builder_cache_push_timeout }} \
+  {{ nix_remote_builder_nix_bin }} copy \
+  --no-check-sigs \
+  --to 'ssh-ng://{{ nix_remote_builder_cache_push_alias }}' \
+  $OUT_PATHS || rc=$?
+
+# Failures are NON-FATAL — a broken cache must never fail a build — but they
+# are NOT SILENT. The original `|| true` here produced no output and hid a
+# real bug for months. Grep build logs for `cache-push:`.
+#
+# Path size is deliberately NOT computed: that would mean walking the
+# closure on every hook invocation, and the path list already names what to
+# look up.
+if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 124 ]; then
+    echo "cache-push: TIMEOUT after {{ nix_remote_builder_cache_push_timeout }}s; NOT cached: $OUT_PATHS" >&2
+  elif [ "$rc" -eq 137 ]; then
+    # SIGKILL from --kill-after: the copy ignored SIGTERM at the deadline.
+    # This is the shape that wedged nas-sdg's GC — named separately so it is
+    # greppable rather than filed under a generic exit code.
+    echo "cache-push: HUNG, SIGKILLed after {{ nix_remote_builder_cache_push_timeout + nix_remote_builder_cache_push_kill_after }}s (ignored SIGTERM); NOT cached: $OUT_PATHS" >&2
+  else
+    echo "cache-push: FAILED (exit $rc); NOT cached: $OUT_PATHS" >&2
+  fi
+fi

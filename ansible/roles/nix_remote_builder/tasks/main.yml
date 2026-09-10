@@ -134,6 +134,15 @@
     creates: "/var/lib/systemd/linger/{{ nix_remote_builder_user }}"
   when: nix_remote_builder_enable_linger | bool
 
+# --- Binary-cache push ---------------------------------------------------
+# Deliberately BEFORE the nix.custom.conf block below, which is what points
+# `post-build-hook` at the script these tasks create. Writing the config
+# first would leave a window in which the daemon references a hook that does
+# not exist yet.
+- name: Configure the binary-cache push
+  ansible.builtin.include_tasks: cache_push.yml
+  when: nix_remote_builder_cache_push | bool
+
 # --- nix.custom.conf -----------------------------------------------------
 # /etc/nix/nix.conf is Determinate-owned ("do not modify! this file will be
 # replaced!") and `!include`s nix.custom.conf, which the installer also
@@ -305,3 +314,69 @@
           {{ _nix_daemon_props.stdout_lines }}
         quiet: true
       when: nix_remote_builder_capping | bool
+
+    - name: Assert the post-build-hook is registered
+      # nix accepts an unreadable or missing post-build-hook path without
+      # complaint at config-load time and only fails per build, so check
+      # that the daemon actually took the setting.
+      vars:
+        _post_build_hook: >-
+          {{ _nix_config_show.stdout_lines
+             | select('match', 'post-build-hook ')
+             | first | default('') }}
+      ansible.builtin.assert:
+        that:
+          - nix_remote_builder_cache_push_hook in _post_build_hook
+        fail_msg: >-
+          post-build-hook is not set to {{ nix_remote_builder_cache_push_hook }}
+          — builds here will not be published to the fleet cache. Got:
+          "{{ _post_build_hook }}"
+        quiet: true
+      when: nix_remote_builder_cache_push | bool
+
+    - name: Exercise the cache-push ssh alias
+      # Proves the alias resolves, the host key pin verifies and the
+      # credential is offered — WITHOUT depending on the far side having
+      # authorised it yet.
+      #
+      # EXPECTED TO FAIL WITH "Permission denied (publickey)" until this
+      # host's pubkey is added to nas-sdg's my.nixCache.fileCache.pushKeys
+      # in nix-personal. That is the correct fail-closed posture; the task
+      # reports it rather than treating it as an error, and nothing on
+      # nas-sdg should be loosened to make it pass.
+      become: true
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh
+          - -o
+          - BatchMode=yes
+          - -o
+          - "ConnectTimeout={{ nix_remote_builder_cache_push_connect_timeout }}"
+          - "{{ nix_remote_builder_cache_push_alias }}"
+          - "true"
+      register: _cache_push_probe
+      changed_when: false
+      failed_when: false
+      when: nix_remote_builder_cache_push | bool
+
+    - name: Assert the cache-push alias fails only on authorisation
+      # Distinguishes "not authorised yet" (fine, and expected) from a real
+      # misconfiguration — a bad HostName, an unresolvable alias, or a host
+      # key that does not verify. Those must not hide behind the expected
+      # permission denial.
+      ansible.builtin.assert:
+        that:
+          - >-
+            _cache_push_probe.rc == 0
+            or 'Permission denied' in (_cache_push_probe.stderr | default(''))
+        fail_msg: >-
+          The cache-push ssh alias is broken beyond the expected
+          not-yet-authorised state (rc={{ _cache_push_probe.rc }}):
+          {{ _cache_push_probe.stderr | default('') | trim }}
+        success_msg: >-
+          {{ 'cache-push alias authorised and reachable'
+             if _cache_push_probe.rc == 0
+             else 'cache-push alias resolves and the host key verifies;
+                   awaiting authorisation in nas-sdg pushKeys (fail-closed,
+                   as expected)' }}
+      when: nix_remote_builder_cache_push | bool

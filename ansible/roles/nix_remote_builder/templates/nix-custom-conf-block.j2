@@ -15,6 +15,14 @@ extra-trusted-users = {{ nix_remote_builder_user }}
 # system can saturate the box regardless of max-jobs.
 max-jobs = {{ nix_remote_builder_max_jobs }}
 cores = {{ nix_remote_builder_cores }}
+{% if nix_remote_builder_cache_push | bool %}
+# Publish every realised output to nas-sdg's file-based cache, so closures
+# built here are not rebuilt everywhere else in the fleet. The script is the
+# Ansible port of nix-common's modules/cache-push.nix. It BLOCKS the build,
+# which is why its failures are bounded and non-fatal — but not silent:
+# grep build logs for `cache-push:`.
+post-build-hook = {{ nix_remote_builder_cache_push_hook }}
+{% endif %}
 {% if nix_remote_builder_extra_platforms %}
 # The PLATFORM half. Advertising a platform without its matching
 # system-feature yields a builder that accepts dispatch and then refuses

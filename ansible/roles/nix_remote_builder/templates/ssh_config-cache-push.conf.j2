@@ -1,0 +1,51 @@
+{{ ansible_managed | comment }}
+#
+# The `{{ nix_remote_builder_cache_push_alias }}` ssh alias used by the nix
+# post-build-hook ({{ nix_remote_builder_cache_push_hook }}).
+#
+# SYSTEM-WIDE, not /root/.ssh/config, and that is the load-bearing part.
+# nix-daemon.service runs with an EMPTY environment — `systemctl show
+# nix-daemon.service -p Environment` prints nothing — so the hook's ssh has
+# no HOME and never reads a user config or a user known_hosts. Same reason
+# nix-common's nas-cache.nix uses programs.ssh.extraConfig (i.e.
+# /etc/ssh/ssh_config) rather than a per-user file.
+#
+# ORDERING: ssh_config takes the FIRST value seen for a keyword, and
+# /etc/ssh/ssh_config's `Include /etc/ssh/ssh_config.d/*.conf` sits above its
+# own `Host *` block. The `10-` prefix keeps this ahead of Debian's
+# 20-systemd-ssh-proxy.conf.
+Host {{ nix_remote_builder_cache_push_alias }}
+{% if nix_remote_builder_cache_push_host_comment %}
+  # {{ nix_remote_builder_cache_push_host_comment }}
+{% endif %}
+  HostName {{ nix_remote_builder_cache_push_host }}
+  Port {{ nix_remote_builder_cache_push_port }}
+  # A DIFFERENT user than the remote-build endpoint, deliberately.
+  # nix-remote-builder is trusted to inject store paths; this credential only
+  # ever drops NARs into the file cache, and is scoped to exactly that by a
+  # forced command in its authorized_keys on nas-sdg. Conflating the two
+  # would widen both — see nix-personal modules/builder-client-keys.nix.
+  User {{ nix_remote_builder_cache_push_user }}
+  IdentityFile {{ nix_remote_builder_cache_push_key }}
+  IdentitiesOnly yes
+  # Bounds the HANDSHAKE only: when the far side is unreachable the push
+  # fails fast instead of blocking the build. The copy IS its own
+  # reachability test; no pre-probe.
+  ConnectTimeout {{ nix_remote_builder_cache_push_connect_timeout }}
+  # Liveness for a connection that is ALREADY UP, which ConnectTimeout does
+  # nothing about and which is the case that actually bit this fleet: a peer
+  # vanished mid-transfer and the client sat on a socket whose far end no
+  # longer existed, looking healthy while doing nothing. Three unanswered
+  # probes at {{ nix_remote_builder_cache_push_alive_interval }}s tears the session down in ~{{ nix_remote_builder_cache_push_alive_interval * nix_remote_builder_cache_push_alive_count }}s. TCP's own keepalive is
+  # not a substitute — its default idle timer is two hours.
+  ServerAliveInterval {{ nix_remote_builder_cache_push_alive_interval }}
+  ServerAliveCountMax {{ nix_remote_builder_cache_push_alive_count }}
+  # Same physical host as the fleet's nix-builder-nas-sdg alias, so its
+  # pinned host key verifies here too — one less literal that could drift.
+  HostKeyAlias {{ nix_remote_builder_cache_push_host_key_alias }}
+  # Pin the host key explicitly. With no HOME there is no ~/.ssh/known_hosts
+  # to fall back on, and a plain `nix copy --to ssh-ng://…` (unlike nix's
+  # remote-BUILD path) injects no known_hosts of its own — so without this
+  # the push dies at "failed to start SSH connection" with a host-key
+  # verification error, which reads like a network problem.
+  UserKnownHostsFile {{ nix_remote_builder_cache_push_known_hosts }}

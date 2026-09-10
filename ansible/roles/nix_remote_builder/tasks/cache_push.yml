@@ -1,0 +1,115 @@
+---
+# Binary-cache push — the Ansible port of nix-common's
+# modules/cache-push.nix. See defaults/main.yml and the templates for the
+# reasoning behind each value; this file carries only what belongs next to a
+# specific task.
+#
+# Everything here is role-managed. Nothing about this is expected to exist
+# on the box beforehand, including the keypair — assume the host could be
+# reinstalled tomorrow and this file is the only record.
+
+# --- The push credential -------------------------------------------------
+- name: Check for an existing cache-push key
+  become: true
+  ansible.builtin.stat:
+    path: "{{ nix_remote_builder_cache_push_key }}"
+  register: _cache_push_key
+  changed_when: false
+
+- name: Generate the cache-push keypair
+  become: true
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -f
+      - "{{ nix_remote_builder_cache_push_key }}"
+      - -C
+      - "{{ nix_remote_builder_cache_push_key_comment }}"
+    creates: "{{ nix_remote_builder_cache_push_key }}"
+  # Guarded on `creates`, so an existing key is NEVER regenerated —
+  # regenerating it would silently invalidate the entry nas-sdg holds in
+  # my.nixCache.fileCache.pushKeys and turn every push into an auth failure.
+  # Deliberately generated here rather than by hand: the whole point is that
+  # a clean run against a fresh box reaches this state on its own.
+
+- name: Handle the generated keypair
+  # Under --check the keygen above does not actually run, so on a box that
+  # has no key yet these would fail on an absent file. Everything here is
+  # drift-correction and reporting; skipping it in that one case costs
+  # nothing.
+  when: _cache_push_key.stat.exists or not ansible_check_mode
+  block:
+    - name: Enforce permissions on the cache-push private key
+      become: true
+      ansible.builtin.file:
+        path: "{{ nix_remote_builder_cache_push_key }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Enforce permissions on the cache-push public key
+      become: true
+      ansible.builtin.file:
+        path: "{{ nix_remote_builder_cache_push_key }}.pub"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Read the cache-push public key
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ nix_remote_builder_cache_push_key }}.pub"
+      register: _cache_push_pubkey
+
+    - name: Report the public key to add to nas-sdg's pushKeys
+      # The one thing this role cannot do for itself: authorising this key
+      # is a change to nix-personal's hosts/nas-sdg/nix.nix
+      # (my.nixCache.fileCache.pushKeys), in a different repo, on a host
+      # this play does not target. Until that lands pushes FAIL CLOSED —
+      # the correct posture, and not to be worked around by loosening
+      # anything on nas-sdg.
+      ansible.builtin.debug:
+        msg: >-
+          cache-push public key (add to nix-personal
+          hosts/nas-sdg/nix.nix my.nixCache.fileCache.pushKeys):
+          {{ _cache_push_pubkey.content | b64decode | trim }}
+
+# --- The ssh alias -------------------------------------------------------
+- name: Pin nas-sdg's host key for the cache-push alias
+  become: true
+  ansible.builtin.template:
+    src: cache-push.known_hosts.j2
+    dest: "{{ nix_remote_builder_cache_push_known_hosts }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the cache-push ssh alias (system-wide — the daemon has no HOME)
+  become: true
+  ansible.builtin.template:
+    src: ssh_config-cache-push.conf.j2
+    dest: "{{ nix_remote_builder_cache_push_ssh_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # ssh_config, unlike sshd_config, has no validator to run here — a
+    # syntax error surfaces on the next push rather than at write time,
+    # which is why the verification block exercises the alias afterwards.
+
+# --- The hook ------------------------------------------------------------
+- name: Install the post-build-hook script
+  become: true
+  ansible.builtin.template:
+    src: cache-push-hook.sh.j2
+    dest: "{{ nix_remote_builder_cache_push_hook }}"
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /bin/bash -n %s
+  # The `post-build-hook = ` line itself is written by the nix.custom.conf
+  # block in tasks/main.yml, so that the whole nix config stays one
+  # managed block rather than two that could disagree.
