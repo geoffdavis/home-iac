@@ -126,3 +126,20 @@ jobs:
             op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-netbird-update.yml --skip-tags update -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp" -e ansible_ssh_private_key_file="$RUNNER_TEMP/jetkvm-ci-key"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # --check, same reasoning as the netbird step above: applying a macro
+      # set reboots the console, and a console is the out-of-band path to its
+      # host -- that stays a human decision, never a scheduled one. --check IS
+      # a real dry run for this play (the role's read-only raw tasks carry
+      # `check_mode: false`, so it genuinely reads each device's live config
+      # and reports drift); it just never writes. `/` is reflashed by every
+      # firmware update, so this is also the thing that would notice a console
+      # coming back from an update with its macro set gone.
+      - name: Check JetKVM macro sets (report only, no write, no reboot)
+        run: |
+          {
+            echo '## JetKVM keyboard macro drift check'
+            echo '```'
+            op run --env-file .env.ci -- ansible-playbook -i netbox_inventory.yml playbooks/jetkvm-macros.yml --check -e ansible_remote_tmp="$RUNNER_TEMP/.ansible-tmp" -e ansible_ssh_private_key_file="$RUNNER_TEMP/jetkvm-ci-key"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
