@@ -15,9 +15,16 @@
 # own `Host *` block. The `10-` prefix keeps this ahead of Debian's
 # 20-systemd-ssh-proxy.conf.
 Host {{ nix_remote_builder_cache_push_alias }}
-{% if nix_remote_builder_cache_push_host_comment %}
-  # {{ nix_remote_builder_cache_push_host_comment }}
+{# Every line gets its own `#`. A multi-line value here would otherwise emit
+   bare prose into ssh_config, and ssh does not merely ignore that: it
+   refuses to parse the whole FILE ("Bad configuration option"), breaking the
+   ssh client system-wide on this host — the cache-push hook included.
+   Caught live by this role's own alias probe, 2026-09-10. #}
+{% for line in (nix_remote_builder_cache_push_host_comment | default('')).split('\n') %}
+{% if line | trim %}
+  # {{ line | trim }}
 {% endif %}
+{% endfor %}
   HostName {{ nix_remote_builder_cache_push_host }}
   Port {{ nix_remote_builder_cache_push_port }}
   # A DIFFERENT user than the remote-build endpoint, deliberately.

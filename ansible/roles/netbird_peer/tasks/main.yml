@@ -1,0 +1,359 @@
+---
+# netbird_peer — enrol a Debian-family host in the netbird overlay.
+#
+# Structured so that the ONLY run which needs the setup key is the one that
+# actually enrols. Everything after that converges to changed=0 with no
+# 1Password access at all — which matters, because the fleet's setup keys
+# are one-off and the credential is gone after first use.
+
+- name: Assert a systemd + apt host
+  # NOT `ansible_os_family == "Debian"`. amd-halo runs AMD's "rex" platform,
+  # which reports its own product name as ansible_os_family ("AMD Ryzen AI
+  # Developer Platform") despite being Debian-derived. ansible_pkg_mgr is
+  # derived independently and says `apt` correctly. See the
+  # nix_remote_builder role for the full fact table.
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.service_mgr == "systemd"
+      - ansible_facts.pkg_mgr == "apt"
+    fail_msg: >-
+      netbird_peer expects a systemd host with apt
+      (got service_mgr={{ ansible_facts.service_mgr }},
+      pkg_mgr={{ ansible_facts.pkg_mgr }}). Do not add a check on
+      ansible_os_family — see this task's comment.
+    quiet: true
+
+# --- Install -------------------------------------------------------------
+- name: Read the installed netbird version
+  become: true
+  ansible.builtin.command:
+    cmd: netbird version
+  register: _netbird_version
+  changed_when: false
+  failed_when: false
+
+- name: Report the intended install under --check
+  # The download/verify/install chain below cannot run under --check: each
+  # step consumes the previous one's real output, so a dry run on a host
+  # without netbird would fail on the first missing artifact rather than
+  # reporting what it would do. Say it instead.
+  ansible.builtin.debug:
+    msg: >-
+      Would install netbird {{ netbird_peer_version }} (currently:
+      {{ (_netbird_version.stdout | default('') | trim) or 'not installed' }})
+  when:
+    - ansible_check_mode
+    - (_netbird_version.stdout | default('') | trim) != netbird_peer_version
+
+- name: Install netbird {{ netbird_peer_version }}
+  when:
+    - (_netbird_version.stdout | default('') | trim) != netbird_peer_version
+    - not ansible_check_mode
+  block:
+    - name: Create the download directory
+      become: true
+      ansible.builtin.file:
+        path: "{{ netbird_peer_download_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Fetch the published checksums
+      become: true
+      ansible.builtin.get_url:
+        url: "{{ netbird_peer_checksums_url }}"
+        dest: "{{ netbird_peer_download_dir }}/netbird_{{ netbird_peer_version }}_checksums.txt"
+        owner: root
+        group: root
+        mode: "0644"
+      register: _netbird_checksums
+
+    - name: Read the checksums file
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ _netbird_checksums.dest }}"
+      register: _netbird_checksums_body
+
+    - name: Extract the .deb's expected sha256
+      # An empty result here means the release renamed or dropped the amd64
+      # .deb — fail on that rather than handing get_url an empty checksum,
+      # which it would silently treat as "no verification".
+      vars:
+        _line: >-
+          {{ (_netbird_checksums_body.content | b64decode).splitlines()
+             | select('search', '\s' ~ (netbird_peer_deb_name | regex_escape) ~ '$')
+             | first | default('') }}
+      ansible.builtin.set_fact:
+        _netbird_deb_sha256: "{{ _line.split() | first | default('') }}"
+      failed_when: (_line.split() | first | default('')) | length != 64
+
+    - name: Download the netbird .deb
+      become: true
+      ansible.builtin.get_url:
+        url: "{{ netbird_peer_deb_url }}"
+        dest: "{{ netbird_peer_download_dir }}/{{ netbird_peer_deb_name }}"
+        checksum: "sha256:{{ _netbird_deb_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: _netbird_deb
+
+    - name: Install the package
+      become: true
+      ansible.builtin.apt:
+        deb: "{{ _netbird_deb.dest }}"
+
+- name: Ensure the netbird daemon is enabled and running
+  become: true
+  ansible.builtin.systemd_service:
+    name: netbird.service
+    enabled: true
+    state: started
+  # Under --check on a host where the install block above was skipped, the
+  # unit does not exist yet and this would error on a missing unit rather
+  # than report intent.
+  when: not (ansible_check_mode and (_netbird_version.stdout | default('') | trim) != netbird_peer_version)
+
+# --- Registration state --------------------------------------------------
+# `netbird status` is the authority on whether this host is already a peer.
+# Exit status is not: it is non-zero while merely disconnected, which is a
+# state we may still want to leave alone.
+- name: Read the current overlay status
+  become: true
+  ansible.builtin.command:
+    cmd: netbird status
+  register: _netbird_status
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether enrolment is needed
+  # "Management: Connected" is the signal that this host holds valid peer
+  # credentials AND can reach the control plane. A host that is registered
+  # but currently offline reports Disconnected, so this can ask for a setup
+  # key it does not need — deliberately preferred over the alternative,
+  # since `netbird up` on an already-registered peer is a no-op reconnect
+  # and the key lookup is the only cost.
+  ansible.builtin.set_fact:
+    _netbird_registered: >-
+      {{ 'Management: Connected' in (_netbird_status.stdout | default('')) }}
+
+- name: Report the existing peer identity
+  ansible.builtin.debug:
+    msg: >-
+      Already enrolled as
+      {{ (_netbird_status.stdout_lines | select('search', '^FQDN:') | first | default('FQDN: unknown')) }}
+      — skipping enrolment.
+  when: _netbird_registered | bool
+
+# --- Enrolment -----------------------------------------------------------
+- name: Report the intended enrolment under --check
+  ansible.builtin.debug:
+    msg: >-
+      Would enrol as {{ netbird_peer_hostname }} using 1Password item
+      "{{ netbird_peer_setup_key_op_item }}" (vault {{ netbird_peer_op_vault }}),
+      expecting groups {{ netbird_peer_expected_groups | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - not (_netbird_registered | bool)
+
+- name: Enrol this host in the overlay
+  # Never under --check: the 1Password lookup below is a real credential
+  # read, and a dry run has no business consuming (or failing on) it.
+  when:
+    - not (_netbird_registered | bool)
+    - not ansible_check_mode
+  block:
+    - name: Fetch the setup key from 1Password
+      ansible.builtin.set_fact:
+        _netbird_setup_key: >-
+          {{ lookup('community.general.onepassword',
+                    netbird_peer_setup_key_op_item,
+                    field='password',
+                    vault=netbird_peer_op_vault) }}
+      no_log: true
+      register: _netbird_key_fetch
+      ignore_errors: true
+
+    - name: Announce the outstanding setup-key prerequisite
+      # A HUMAN STEP, deliberately not automated. netbird's control plane is
+      # dashboard-only in this fleet (see the topology note), creating a
+      # setup key mints a credential, and the key's auto-groups are what
+      # actually decide this host's ACLs — none of which should happen as a
+      # side effect of running a play.
+      #
+      # NON-FATAL by default, and that is a deliberate call rather than
+      # timidity. This role shares a play with nix_remote_builder, which
+      # keeps a box that is TAKING REAL FLEET BUILDS converged. Aborting
+      # here would stop that work for the sake of an enhancement whose
+      # absence costs nothing at runtime — cache-push simply stays on the
+      # LAN address, which works. Set netbird_peer_required=true to make it
+      # fatal (e.g. in CI, once enrolment is meant to be a settled fact).
+      ansible.builtin.debug:
+        msg: |
+          ==================================================================
+          PREREQUISITE OUTSTANDING: no netbird setup key for {{ inventory_hostname }}.
+
+          Not a bug — this step mints a credential and decides this host's
+          ACLs, so it is left to a human. The rest of the play continues;
+          cache-push stays on the LAN address until this is done.
+
+          1. netbird console -> Setup Keys -> Create Setup Key
+               name        : {{ inventory_hostname }}
+               type        : one-off
+               auto-groups : {{ netbird_peer_expected_groups | join(', ') }}
+
+             The auto-groups are the load-bearing part. class-builder is
+             chosen because its two policies are exactly this host's two
+             needs, in the two directions it needs them:
+               nas-to-builder-ssh  class-nas     -> class-builder  tcp/22
+               builder-to-hub-ssh  class-builder -> class-nas-hub  tcp/22
+
+          2. Store the key in 1Password:
+               vault : {{ netbird_peer_op_vault }}
+               item  : {{ netbird_peer_setup_key_op_item }}
+               field : password
+
+          3. Re-run this play. It will enrol, and nix_remote_builder's
+             cache-push destination will move from the LAN address to
+             nas-sdg's overlay name on the same run.
+          ==================================================================
+      when: _netbird_key_fetch is failed
+
+    - name: Fail on the missing setup key when enrolment is mandatory
+      ansible.builtin.fail:
+        msg: >-
+          netbird_peer_required is set and no setup key is available for
+          {{ inventory_hostname }} — see the message above for how to
+          create it.
+      when:
+        - _netbird_key_fetch is failed
+        - netbird_peer_required | bool
+
+    # Everything below needs the key. Gated as its own block so a missing
+    # credential skips enrolment cleanly instead of running `netbird up`
+    # with an undefined variable.
+    - name: Perform the enrolment
+      when: _netbird_key_fetch is not failed
+      block:
+        # Detached, via systemd-run. `netbird up` brings up wt0 and installs
+        # overlay routes; if that ever disturbs the LAN path this play arrives
+        # over, an inline command would be killed halfway and leave the host
+        # half-enrolled. Detached, enrolment completes regardless and the host
+        # comes back on whichever path survives.
+        #
+        # --collect so the transient unit does not linger in a failed state and
+        # block the next run's identically-named unit.
+        - name: Run `netbird up` detached from this ssh session
+          become: true
+          ansible.builtin.command:
+            argv: "{{ _argv_detached if netbird_peer_enrol_detached | bool else _argv_inline }}"
+          vars:
+            _argv_inline:
+              - netbird
+              - up
+              - --setup-key
+              - "{{ _netbird_setup_key }}"
+              - --hostname
+              - "{{ netbird_peer_hostname }}"
+            _argv_detached: "{{ ['systemd-run', '--collect', '--wait',
+                                '--unit=' ~ netbird_peer_enrol_unit] + _argv_inline }}"
+          no_log: true # the setup key is in argv
+          changed_when: true
+
+        # wait_for_connection runs the `ping` MODULE against the target, so it
+        # needs a working python interpreter there — it is not a pure transport
+        # check. That holds fine here (this host has /usr/bin/python3.13), but
+        # do not carry this task to a python-less device expecting it to work;
+        # playbooks/jetkvm-netbird-update.yml has a comment claiming otherwise
+        # and it is wrong for exactly that reason.
+        - name: Wait for the host to come back
+          ansible.builtin.wait_for_connection:
+            connect_timeout: 10
+            delay: 3
+            sleep: 5
+            timeout: "{{ netbird_peer_reconnect_timeout }}"
+
+        - name: Wait for the management connection to establish
+          become: true
+          ansible.builtin.command:
+            cmd: netbird status
+          register: _netbird_post
+          changed_when: false
+          failed_when: false
+          retries: "{{ netbird_peer_connect_retries }}"
+          delay: "{{ netbird_peer_connect_delay }}"
+          until: "'Management: Connected' in (_netbird_post.stdout | default(''))"
+
+# --- Role output ---------------------------------------------------------
+# Published deliberately, as a PUBLIC fact rather than a private `_`-prefixed
+# one: later roles in the same play consume it. nix_remote_builder's
+# cache-push destination keys off this to choose nas-sdg's overlay name over
+# the LAN address, so the special case retires itself on the first run after
+# enrolment instead of needing a follow-up edit.
+- name: Re-read the overlay status
+  become: true
+  ansible.builtin.command:
+    cmd: netbird status
+  register: _netbird_final
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Publish enrolment state for later roles
+  ansible.builtin.set_fact:
+    netbird_peer_enrolled: >-
+      {{ 'Management: Connected' in (_netbird_final.stdout | default('')) }}
+    netbird_peer_fqdn: >-
+      {{ (_netbird_final.stdout_lines | default([])
+          | select('search', '^FQDN:') | first | default('FQDN: '))
+         | regex_replace('^FQDN:\s*', '') }}
+
+# --- Verification --------------------------------------------------------
+- name: Verify the peer
+  when:
+    - netbird_peer_verify | bool
+    - not ansible_check_mode
+  block:
+
+    - name: Assert the peer is connected under the expected name
+      # Only meaningful once enrolled. An un-enrolled host has already been
+      # told what it needs (the prerequisite announcement above); asserting
+      # here would just restate that as a failure and take the rest of the
+      # play down with it.
+      ansible.builtin.assert:
+        that:
+          - "'Management: Connected' in _netbird_final.stdout"
+          - "'Signal: Connected' in _netbird_final.stdout"
+          - netbird_peer_hostname in _netbird_final.stdout
+        fail_msg: >-
+          {{ inventory_hostname }} is not a healthy peer named
+          {{ netbird_peer_hostname }}:
+          {{ _netbird_final.stdout_lines }}
+        quiet: true
+      when: netbird_peer_enrolled | bool
+
+    - name: Confirm the LAN address still answers
+      # THE POINT OF THIS CHECK. Joining an overlay installs routes, and the
+      # failure this role most needs to catch is netbird capturing the very
+      # LAN prefix this host sits on — which would cut the path everything
+      # else (this play, the cache-push fallback, LAN-side ssh) depends on.
+      # Checked from the CONTROL NODE, so it tests the real path rather than
+      # the host's opinion of it.
+      delegate_to: localhost
+      become: false
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 15
+      changed_when: false
+
+    - name: Report the peer's overlay identity
+      ansible.builtin.debug:
+        msg: >-
+          {{ (_netbird_final.stdout_lines
+              | select('search', '^(FQDN|NetBird IP|Management|Signal):')
+              | list)
+             if (netbird_peer_enrolled | bool)
+             else ['not enrolled — see the prerequisite announcement above',
+                   'cache-push destination stays on the LAN address'] }}

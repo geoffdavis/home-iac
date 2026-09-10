@@ -236,13 +236,33 @@ reads like a network problem.
 
 ### Two deviations from `cache-push.nix`
 
-1. **Addressed by LAN IP** (`172.29.50.20`), not `nas-sdg.netbird.cloud`.
-   amd-halo is **not a netbird peer** — no netbird binary, and that name
-   does not resolve there — so the overlay name would fail closed on every
-   push. The host-key pin is keyed on the `HostKeyAlias`
-   (`nix-builder-nas-sdg`), so this address choice does not invalidate it.
-   Switch `nix_remote_builder_cache_push_host` to the overlay name if
-   amd-halo is ever enrolled.
+1. **The destination address is a condition, not a literal.** When this role
+   was written amd-halo was not a netbird peer — no netbird binary, and
+   `nas-sdg.netbird.cloud` did not resolve there — so the overlay name would
+   have failed closed on every push, and the LAN address `172.29.50.20` was
+   used as a documented deviation. The `netbird_peer` role (which runs first
+   in the play, precisely so this can see its result) now enrols the host,
+   and the default reads:
+
+   ```
+   nas-sdg.netbird.cloud   if netbird_peer_enrolled
+   172.29.50.20            otherwise
+   ```
+
+   Self-healing in the right direction: enrolment depends on a
+   human-created setup key, so this keeps the working LAN path until
+   enrolment actually succeeds, then moves to the overlay name on that same
+   run — no follow-up edit, and no window where the hook points somewhere
+   unreachable. The `| default(false)` lets this role stand alone. The
+   host-key pin is keyed on the `HostKeyAlias` (`nix-builder-nas-sdg`), so
+   neither address invalidates it.
+
+   **The comment on that alias must stay one line per `#`.** A multi-line
+   value emitted bare into `ssh_config` does not get ignored — ssh refuses
+   to parse the whole file (`Bad configuration option`) and the ssh
+   *client* breaks system-wide on this host, cache-push included. Caught
+   live 2026-09-10 by this role's own alias probe; the template now
+   prefixes every line individually.
 2. **Absolute binary paths** (`/usr/bin/timeout`,
    `/nix/var/nix/profiles/default/bin/nix`) instead of nix store paths.
    `cache-push.nix` interpolates `${pkgs.coreutils}` and

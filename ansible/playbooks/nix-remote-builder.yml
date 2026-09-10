@@ -26,4 +26,13 @@
   become: true
   gather_facts: true
   roles:
+    # ORDER MATTERS. netbird_peer must land first: nix_remote_builder's
+    # cache-push destination is nas-sdg's OVERLAY name, which does not
+    # resolve on a host that is not yet a peer. Enrolling second would
+    # write a hook that fails every push until the next run.
+    #
+    # netbird_peer is fleet-generic — nothing about it is builder-specific.
+    # It lives in this play because amd-halo is the only non-NixOS peer
+    # today; give it its own play when a second, non-builder one appears.
+    - netbird_peer
     - nix_remote_builder

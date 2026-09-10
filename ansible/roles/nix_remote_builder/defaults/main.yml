@@ -196,17 +196,49 @@ nix_remote_builder_cache_push_key_comment: "nix-cache-push@{{ inventory_hostname
 nix_remote_builder_cache_push_alias: nix-cache-push-nas-sdg
 nix_remote_builder_cache_push_user: nix-cache-push
 
-# ADDRESSED BY LAN IP, WHICH IS A REAL DEVIATION FROM THE FLEET MODULE.
-# nas-cache.nix uses `nas-sdg.netbird.cloud`; amd-halo is NOT a netbird peer
-# (no netbird binary, and that name does not resolve there), so the overlay
-# name would fail closed on every push. 172.29.50.20:22 is reachable from
-# this box and is the same address inventory.yml already uses for nas-sdg.
-# Switch to the overlay name if amd-halo is ever enrolled.
-nix_remote_builder_cache_push_host: "172.29.50.20"
+# THE DESTINATION ADDRESS, AND WHY IT IS A CONDITION RATHER THAN A LITERAL.
+#
+# nix-common's nas-cache.nix — the module this role ports — addresses
+# nas-sdg as `nas-sdg.netbird.cloud`, and that is the form the whole fleet
+# uses. When this role was first written amd-halo was NOT a netbird peer:
+# no netbird binary, and that name did not resolve there, so the overlay
+# name would have failed closed on EVERY push. The LAN address
+# (172.29.50.20:22, the same one inventory.yml uses for nas-sdg) was chosen
+# instead, as a deliberate and documented deviation.
+#
+# The netbird_peer role now enrols this host — it runs FIRST in
+# playbooks/nix-remote-builder.yml, precisely so this expression can see its
+# result — which retires that deviation. Written as a condition rather than
+# flipped to a literal, for two reasons:
+#
+#   * SELF-HEALING IN THE RIGHT DIRECTION. Enrolment depends on a
+#     human-created setup key. Until that exists the host is not a peer and
+#     the overlay name does not resolve, so this keeps the working LAN path
+#     until the moment enrolment actually succeeds — then moves to the
+#     overlay name on that same run. No follow-up edit, and no window where
+#     the hook points somewhere unreachable.
+#
+#   * THE LAN REASONING STAYS LIVE rather than decaying into a comment about
+#     a branch nobody takes. If this host is ever un-enrolled or rebuilt, the
+#     fallback is still correct and still explained.
+#
+# `netbird_peer_enrolled` is a public fact set by the netbird_peer role.
+# The `| default(false)` matters: it lets this role stand alone, choosing
+# the LAN address when run without netbird_peer ahead of it.
+nix_remote_builder_cache_push_host_overlay: "nas-sdg.netbird.cloud"
+nix_remote_builder_cache_push_host_lan: "172.29.50.20"
+nix_remote_builder_cache_push_host: >-
+  {{ nix_remote_builder_cache_push_host_overlay
+     if (netbird_peer_enrolled | default(false) | bool)
+     else nix_remote_builder_cache_push_host_lan }}
 nix_remote_builder_cache_push_port: 22
 nix_remote_builder_cache_push_host_comment: >-
-  nas-sdg over the LAN: this box is not a netbird peer, so the fleet's
-  nas-sdg.netbird.cloud name does not resolve here.
+  {{ 'nas-sdg over the netbird overlay, same as every other fleet host.'
+     if (netbird_peer_enrolled | default(false) | bool)
+     else 'nas-sdg over the LAN: this host is not (yet) a netbird peer, so
+     the fleet-standard nas-sdg.netbird.cloud name does not resolve here.
+     Enrolling it (netbird_peer role) moves this to the overlay name
+     automatically.' }}
 
 # nas-sdg's sshd host key, base64, copied verbatim from nas-cache.nix's
 # `builderPublicHostKey` so there is one source of truth fleet-wide.
