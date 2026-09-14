@@ -1,0 +1,139 @@
+---
+# argument_specs locks the role's input schema at role-entry so a malformed
+# override fails with a per-key error before anything on a remote console is
+# touched. Same convention as nixos_freeipa_vm and jetkvm_macros.
+#
+# NOTE: this only validates SHAPE. The checks that actually matter for a
+# thing that can hard-crash a NAS — that target and witness are set, differ,
+# and are LAN IPv4 literals rather than names — live in tasks/main.yml,
+# because argument_specs cannot express a conditional ("required only when
+# enabled") or a cross-field comparison.
+argument_specs:
+  main:
+    short_description: Manage the resident freeze catcher on a JetKVM OOB console.
+    description:
+      - >-
+        Installs a watcher that probes the NAS behind a JetKVM console over
+        the LAN, and — when the NAS stops answering its SSH banner while an
+        independent witness still does — sends Alt+SysRq+W and Alt+SysRq+C
+        from the console's own emulated keyboard, so the freeze leaves a
+        blocked-task dump in efi_pstore that survives the watchdog reset.
+      - >-
+        Alt+SysRq+C HARD-CRASHES the target. The role is default-OFF on every
+        console, and on any console where it is not explicitly enabled it
+        actively removes the init script and stops any running catcher rather
+        than merely skipping.
+    options:
+      jetkvm_freeze_catcher_enabled:
+        type: bool
+        required: false
+        description: >-
+          Arm the catcher on this console. Default false. Where false, the
+          role DISARMS the console (removes the init script, kills any
+          running catcher) rather than leaving whatever is there.
+      jetkvm_freeze_catcher_dry_run:
+        type: bool
+        required: false
+        description: >-
+          Detect and log exactly as normal but never write to the HID gadget.
+          The safe way to commission a new console — proves the detection
+          path without letting it crash anything.
+      jetkvm_freeze_catcher_target:
+        type: str
+        required: false
+        description: >-
+          LAN IPv4 LITERAL of the NAS to watch. Never a hostname: netbird
+          names do not resolve on these devices, so a name silently produces
+          a catcher that can never arm. Required when enabled.
+      jetkvm_freeze_catcher_witness:
+        type: str
+        required: false
+        description: >-
+          LAN IPv4 LITERAL of an independent host that must still answer for
+          a freeze to count. Prefer the shared segment's gateway: always up,
+          different hardware from the target, same path the probe already
+          uses. If target and witness are both silent it is a network fault
+          and the catcher must not fire. Required when enabled.
+      jetkvm_freeze_catcher_target_name:
+        type: str
+        required: false
+        description: Cosmetic name for the target, used in log lines and comments.
+      jetkvm_freeze_catcher_target_port:
+        type: int
+        required: false
+        description: Port to read the target's SSH banner from (default 22).
+      jetkvm_freeze_catcher_witness_port:
+        type: int
+        required: false
+        description: Port to read the witness's SSH banner from (default 22).
+      jetkvm_freeze_catcher_probe_timeout:
+        type: int
+        required: false
+        description: >-
+          Seconds to wait for a banner. Also the threshold that separates
+          "TCP accepted but silent" (the freeze shape) from "could not
+          connect" in the log.
+      jetkvm_freeze_catcher_consecutive_fails:
+        type: int
+        required: false
+        description: >-
+          Consecutive failed target probes (each with the witness answering)
+          required before firing. Must be >= 2. Raising it eats into the
+          target's ~120s watchdog window.
+      jetkvm_freeze_catcher_poll_ok:
+        type: int
+        required: false
+        description: Seconds between probes while the target is healthy.
+      jetkvm_freeze_catcher_poll_fail:
+        type: int
+        required: false
+        description: Seconds between probes while the target is failing.
+      jetkvm_freeze_catcher_sysrq_gap:
+        type: int
+        required: false
+        description: >-
+          Seconds between SysRq-W and SysRq-C, so the blocked-task dump lands
+          in the ring buffer before the panic output joins it.
+      jetkvm_freeze_catcher_heartbeat_every:
+        type: int
+        required: false
+        description: >-
+          Log a positive liveness line every N healthy polls. This is what
+          makes a dead or blind catcher visible; do not set it to 0.
+      jetkvm_freeze_catcher_restart_delay:
+        type: int
+        required: false
+        description: Seconds the supervisor waits before relaunching an exited catcher.
+      jetkvm_freeze_catcher_dir:
+        type: str
+        required: false
+        description: >-
+          On-device payload directory. Must be under /userdata, which
+          survives firmware updates.
+      jetkvm_freeze_catcher_init_name:
+        type: str
+        required: false
+        description: >-
+          Init script name under /etc/init.d. That filesystem is reflashed by
+          every firmware update, so this role reinstalls it every run.
+      jetkvm_freeze_catcher_pidfile:
+        type: str
+        required: false
+        description: Pidfile path for the supervisor process.
+      jetkvm_freeze_catcher_hid:
+        type: str
+        required: false
+        description: >-
+          The console's local USB HID keyboard gadget. Local on purpose —
+          no ssh, no agent and no overlay in the capture path.
+      jetkvm_freeze_catcher_chunk_chars:
+        type: int
+        required: false
+        description: >-
+          Base64 characters per raw command when pushing a file. dropbear
+          caps exec-request length, so the payload is appended in bounded
+          chunks rather than sent in one command.
+      jetkvm_freeze_catcher_log_max_bytes:
+        type: int
+        required: false
+        description: Size at which the on-device log is halved in place.
