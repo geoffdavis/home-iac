@@ -57,8 +57,19 @@
       fi
     done
     n=0
+    self=$$
     for d in /proc/[0-9]*; do
+      pid=${d#/proc/}
+      [ "$pid" = "$self" ] && continue
       c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+      # Skip inline-script shells. The argv of THIS task contains the daemon
+      # paths, because they are written literally in the script text above,
+      # so without this guard the loop matches itself. In the detect task
+      # that made RUNNING never reach 0; in the disarm task it sent kill -9
+      # to the ansible session before echo disarmed, surfacing as UNREACHABLE
+      # with a closed shared connection, leaving the console still armed.
+      # The daemons are exec-ed as sh PATH; an inline script is sh -c TEXT.
+      case "$c" in *" -c "*) continue ;; esac
       case "$c" in
         *{{ jetkvm_freeze_catcher_dir }}/supervise.sh*) n=$((n+1)) ;;
       esac
@@ -101,11 +112,22 @@
       /etc/init.d/{{ jetkvm_freeze_catcher_init_name }} stop >/dev/null 2>&1
     fi
     rm -f /etc/init.d/{{ jetkvm_freeze_catcher_init_name }}
+    self=$$
     for d in /proc/[0-9]*; do
+      pid=${d#/proc/}
+      [ "$pid" = "$self" ] && continue
       c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+      # Skip inline-script shells. The argv of THIS task contains the daemon
+      # paths, because they are written literally in the script text above,
+      # so without this guard the loop matches itself. In the detect task
+      # that made RUNNING never reach 0; in the disarm task it sent kill -9
+      # to the ansible session before echo disarmed, surfacing as UNREACHABLE
+      # with a closed shared connection, leaving the console still armed.
+      # The daemons are exec-ed as sh PATH; an inline script is sh -c TEXT.
+      case "$c" in *" -c "*) continue ;; esac
       case "$c" in
-        *{{ jetkvm_freeze_catcher_dir }}/supervise.sh*) kill -9 "${d#/proc/}" 2>/dev/null ;;
-        *{{ jetkvm_freeze_catcher_dir }}/catcher.sh*) kill -9 "${d#/proc/}" 2>/dev/null ;;
+        *{{ jetkvm_freeze_catcher_dir }}/supervise.sh*) kill -9 "$pid" 2>/dev/null ;;
+        *{{ jetkvm_freeze_catcher_dir }}/catcher.sh*) kill -9 "$pid" 2>/dev/null ;;
       esac
     done
     rm -f {{ jetkvm_freeze_catcher_pidfile }}

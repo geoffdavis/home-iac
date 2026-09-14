@@ -15,6 +15,26 @@ The OpenTaco Cloud state backend is a separate credential: a CLI token from
 `tofu login otaco.app`, stored in `~/.terraform.d/credentials.tfrc.json`,
 not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
 
+**The NetBox dynamic-inventory token is NOT in `.env`.** `.env` carries only
+the AWS S3 keys, so `task ansible:run` — which is `op run --env-file ../.env
+-- ansible-playbook -i netbox_inventory.yml` — does not supply it.
+`netbox_inventory.yml` reads `NETBOX_TOKEN` from the environment, and the
+value lives at `op://nas-overlay/netbox-ansible-inventory-token/token`:
+
+```sh
+NETBOX_TOKEN=$(op read "op://nas-overlay/netbox-ansible-inventory-token/token") \
+  ansible-playbook -i netbox_inventory.yml playbooks/<play>.yml --limit <host>
+```
+
+This fails *silently* and misleadingly without the token: NetBox answers
+`Permission denied` on `/api/status/`, the inventory falls back to implicit
+localhost, and the play reports `skipping: no hosts matched` rather than any
+authentication error. Do not read that as "the host is not in inventory", and
+do not reach for `ansible:run-static` — that wraps the same `op run` and is
+for when NetBox itself is down. Resolve the token once into a variable per
+run; every `op` invocation raises a biometric prompt, so a retry loop while
+diagnosing turns into a prompt storm for the operator.
+
 ## OpenTofu (`environments/home`)
 
 - State lives in OpenTaco Cloud (`cloud.tf`), not S3. A `cloud` block and a
