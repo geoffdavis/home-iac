@@ -21,7 +21,39 @@
 #
 # nas-sct and nas-cin are NOT freezing and must not get an armed catcher, so
 # the role default stays false and only this file turns it on.
-jetkvm_freeze_catcher_enabled: true
+#
+# ── DISARMED 2026-09-14 ───────────────────────────────────────────────────
+#
+# Turned off after it fired on three DELIBERATE reboots in one evening. The
+# catcher detects a freeze by probing, so it cannot tell `systemctl reboot`
+# from a hang -- a planned reboot looks exactly like a freeze to it: target
+# silent, witness still answering. Of its five firings, the 2026-09-12/13
+# ones tracked real faults; all three on 2026-09-14 were planned reboots
+# during a fleet deploy.
+#
+# The cost is not just a noisy log. The SysRq goes out as raw USB-HID
+# keystrokes, and a host ~60s into a reboot is sitting in systemd-boot's
+# menu, which CANCELS its countdown on any keypress. So each false firing
+# parked nas-sdg at the generation picker until a human walked over and
+# pressed Enter. On a hub that is an outage; the hardware watchdog cannot
+# help, because nothing has started yet. (It also means the SysRq never
+# reached a running kernel: /sys/fs/pstore was empty after every one.)
+#
+# There is no inhibit or maintenance switch in catcher.sh -- ARMED is an
+# internal variable, not an external control -- so `enabled: false` here,
+# plus `/etc/init.d/S60freeze-catcher stop` on the device, is the only way
+# to silence it. Note a runtime stop alone does NOT persist: S60 restarts it
+# on the JetKVM's next boot and an ansible reconcile would re-enable it,
+# which is why this flag has to change too.
+#
+# RE-ARM IF nas-sdg STARTS FREEZING AGAIN. The evidence problem this was
+# built for is real and unsolved by turning it off -- freezes still leave no
+# journal, no kernel output and an empty pstore, and this console remains the
+# only way to force a dump. nix-personal #670 (merged 2026-09-14: kernel pin
+# revert, C-state cap, watchdog, fan control) is the change that is expected
+# to stop the freezes; if it did not, this goes back to true and the
+# false-positive cost gets paid until a proper inhibit exists.
+jetkvm_freeze_catcher_enabled: false
 
 # ── ADDRESSING ────────────────────────────────────────────────────────────
 #
