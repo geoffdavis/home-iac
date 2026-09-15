@@ -1,0 +1,300 @@
+#!/bin/sh
+# {{ jetkvm_freeze_catcher_dir }}/catcher.sh
+#
+# MANAGED BY ANSIBLE — home-iac, roles/jetkvm_freeze_catcher. Do not edit on
+# the device; the next run overwrites it and your change is lost.
+#
+# Resident freeze catcher for {{ jetkvm_freeze_catcher_target_name }}, running ON the
+# JetKVM console rather than on anybody's laptop.
+#
+# ── WHY IT LIVES HERE ──────────────────────────────────────────────────────
+# Four earlier versions ran on the owner's Mac. All four DETECTED real
+# freezes and all four FAILED to capture, for one reason: the keystrokes
+# travelled over ssh and the 1Password SSH agent died overnight. Running on
+# the console removes that entire class — {{ jetkvm_freeze_catcher_hid }} is LOCAL, so a
+# capture needs no ssh, no agent, no laptop awake, and no overlay.
+#
+# ── PROBE: SSH BANNER, NOT PING AND NOT A TCP CONNECT ──────────────────────
+# ping is filtered over netbird on this fleet — it both false-alarms and
+# misses. A TCP connect is actively WRONG: the handshake is performed by the
+# KERNEL, which in these freezes keeps servicing interrupts for up to a
+# minute after userspace has died, so `nc -z` reports SUCCESS on a dead box.
+# That mistake cost a real capture on 2026-09-11 02:35.
+#
+# "SSH-2.0-..." can only be written by sshd, so receiving it proves USERSPACE
+# is alive. `timeout` bounds the probe; an unbounded probe once hung for 120s
+# on a frozen host, which is how a detector ends up looking armed while being
+# incapable of firing.
+#
+# ── ADDRESSES ARE LAN LITERALS, ON PURPOSE ─────────────────────────────────
+# Each console probes its NAS over the LAN segment they share, never over
+# netbird. Three reasons, all load-bearing:
+#   1. Netbird names do not resolve from these devices AT ALL. Measured
+#      2026-09-11: on jetkvm-sdg-02 `nas-sdg.netbird.cloud` times out while
+#      172.29.50.20 answers instantly; on jetkvm-sct-01
+#      `nas-sct.netbird.cloud` returns NXDOMAIN while 172.29.41.150 answers.
+#      The overlay is not merely slower here, it is non-functional for this.
+#   2. Independence is the whole point. The catcher must keep working when
+#      the overlay is down — a freeze that correlates with a netbird problem
+#      is exactly when you least want the watcher blinded, and a watcher that
+#      fails under the same conditions as its target is not a watcher.
+#   3. Shortest path, so the detection window is not eaten by overlay latency
+#      during the ~120s before the hardware watchdog resets the box.
+#
+# ── WHAT IT CAPTURES ───────────────────────────────────────────────────────
+#   Ctrl+Alt+F12  switch to VT12, where kernel output goes fleet-wide
+#   Alt+SysRq+W   blocked-task dump into the kernel ring buffer
+#   Alt+SysRq+C   forced panic -> kmsg_dump writes the ring-buffer TAIL into
+#                 efi_pstore, which SURVIVES the reset and shows up in
+#                 /sys/fs/pstore after reboot.
+# Printing alone is useless — the ring buffer dies with the reset.
+# Deliberately NOT SysRq-T: dumping every task floods the buffer and evicts
+# the blocked-task output we want from the tail.
+#
+# ── SAFETY ─────────────────────────────────────────────────────────────────
+# Alt+SysRq+C HARD-CRASHES the target. It fires only when ALL of these hold:
+#   * the catcher has previously seen the target healthy at least once (ARMED)
+#   * the target has failed the banner probe CONSECUTIVE_FAILS times running
+#   * the WITNESS still answers on every one of those checks
+#   * it has not already fired for this freeze
+# If target and witness are both silent that is a network fault, and firing
+# would panic a healthy box over a switch blip — far worse than missing one
+# capture.
+#
+# ── WHY THIS SCRIPT LOGS SO MUCH (read before "tidying" it) ────────────────
+# On 2026-09-11 18:14:31 the hand-made predecessor of this script was
+# running, armed, and watching a box that froze for ~2 minutes. It logged
+# NOTHING and never fired. The reason it could not be diagnosed afterwards is
+# that the old script only ever logged EXCEPTIONS: while healthy it was
+# silent, while unarmed it was silent, and it only spoke up on the 4th
+# consecutive failure. "Silent" was therefore indistinguishable from "dead",
+# "blind" and "fine" — so an armed-looking catcher that could not fire looked
+# exactly like a working one.
+#
+# Every branch below logs, and a periodic heartbeat proves liveness while
+# healthy. A watcher that is silent when it is working cannot be trusted when
+# it is quiet.
+
+set -u
+
+TARGET={{ jetkvm_freeze_catcher_target }}
+TARGET_PORT={{ jetkvm_freeze_catcher_target_port }}
+WITNESS={{ jetkvm_freeze_catcher_witness }}
+WITNESS_PORT={{ jetkvm_freeze_catcher_witness_port }}
+HID={{ jetkvm_freeze_catcher_hid }}
+LOG={{ jetkvm_freeze_catcher_dir }}/catcher.log
+
+PROBE_TIMEOUT={{ jetkvm_freeze_catcher_probe_timeout }}
+CONSECUTIVE_FAILS={{ jetkvm_freeze_catcher_consecutive_fails }}
+POLL_OK={{ jetkvm_freeze_catcher_poll_ok }}
+POLL_FAIL={{ jetkvm_freeze_catcher_poll_fail }}
+HEARTBEAT_EVERY={{ jetkvm_freeze_catcher_heartbeat_every }}
+SYSRQ_GAP={{ jetkvm_freeze_catcher_sysrq_gap }}
+LOG_MAX_BYTES={{ jetkvm_freeze_catcher_log_max_bytes }}
+
+# 1 = detect and log exactly as normal, but never write to the HID. Use this
+# to prove the detection path on a host before letting it crash anything.
+DRY_RUN={{ 1 if jetkvm_freeze_catcher_dry_run else 0 }}
+
+FAILS=0
+ARMED=0
+FIRED=0
+HEALTHY_POLLS=0
+LAST_RESULT=
+
+log() {
+  echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >>"$LOG" 2>/dev/null
+  # Keep the log bounded; /userdata is roomy but this runs forever.
+  _sz=$(wc -c <"$LOG" 2>/dev/null) || _sz=0
+  [ -n "$_sz" ] || _sz=0
+  if [ "$_sz" -gt "$LOG_MAX_BYTES" ] 2>/dev/null; then
+    tail -c $((LOG_MAX_BYTES / 2)) "$LOG" >"$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+  fi
+}
+
+# probe HOST PORT
+#
+# Sets PROBE_RESULT to one of:
+#   ALIVE           — sshd wrote its banner, so userspace is running
+#   SILENT_ACCEPTED — TCP was accepted but nothing was ever written. THIS IS
+#                     THE FREEZE SHAPE: the kernel still services interrupts
+#                     while userspace is dead.
+#   SILENT_NOCONN   — could not establish a connection at all (no route, no
+#                     ARP reply, refused). Later-stage freeze, or a network
+#                     fault — which is what the witness is there to tell apart.
+#
+# The ACCEPTED/NOCONN split is by ELAPSED TIME, because busybox `nc` reports
+# no usable exit status through the pipeline: an accepted-but-silent socket
+# blocks until `timeout` kills it, while an unreachable one returns as soon
+# as the kernel gives up. Measured on jetkvm-sdg-02, 2026-09-11:
+#   1.1.1.1:22        accepted, never writes -> 6s (== PROBE_TIMEOUT)
+#   172.29.50.253:22  no ARP reply on-segment -> 3s
+#   a refused port                            -> 0s
+# This field is not decoration. It is the single measurement that will say,
+# the next time a capture is missed, whether the target was really silent or
+# whether the catcher was looking at something that still answers.
+#
+# Returns 0 only for ALIVE.
+probe() {
+  _p_start=$(date +%s)
+  # `head -c 8` bounds the read; `timeout` bounds the whole thing. printf ''
+  # gives nc an immediately-closed stdin so it never waits on the keyboard.
+  PROBE_BANNER=$(printf '' | timeout "$PROBE_TIMEOUT" nc "$1" "$2" 2>/dev/null | head -c 8)
+  PROBE_ELAPSED=$(($(date +%s) - _p_start))
+  case "$PROBE_BANNER" in
+    SSH-*)
+      PROBE_RESULT=ALIVE
+      return 0
+      ;;
+  esac
+  if [ "$PROBE_ELAPSED" -ge "$PROBE_TIMEOUT" ]; then
+    PROBE_RESULT=SILENT_ACCEPTED
+  else
+    PROBE_RESULT=SILENT_NOCONN
+  fi
+  return 1
+}
+
+# Write one 8-byte HID report, then the all-zeros release report.
+#
+# The predecessor wrote `printf "$REPORT" >"$HID" 2>/dev/null` and then
+# logged "sent" unconditionally. That is a silent-failure capture path:
+# measured on-device 2026-09-11, `printf '\x00' > /dev/hidg9 2>/dev/null`
+# (a gadget that does not exist) returns rc=0, so the old script would
+# cheerfully report keystrokes it had never delivered. Capturing stderr is
+# what actually detects a dead gadget.
+send_report() {
+  _rep=$1
+  _label=$2
+  # shellcheck disable=SC2059
+  # The report IS the format string, deliberately: the \xHH escapes have to
+  # be expanded, and busybox printf expands them in the FORMAT (verified
+  # on-device 2026-09-11 -- printf of the 8 escape bytes writes exactly
+  # 05 00 45 00 00 00 00 00). %b expansion of \xHH is a GNU extension that
+  # was NOT verified here, so it is not relied on. These reports are
+  # role-internal constants containing no '%', so nothing can be injected.
+  _err=$(printf "$_rep" 2>&1 >"$HID")
+  if [ -n "$_err" ]; then
+    log "  ERROR: HID write FAILED for $_label: $_err"
+    return 1
+  fi
+  sleep 1
+  _err=$(printf '\x00\x00\x00\x00\x00\x00\x00\x00' 2>&1 >"$HID")
+  if [ -n "$_err" ]; then
+    log "  ERROR: HID release write FAILED after $_label: $_err"
+    return 1
+  fi
+  log "  sent $_label"
+  return 0
+}
+
+# Prove at startup that the capture path works, instead of finding out during
+# the one 120-second window that matters. The all-zeros report means "no keys
+# pressed" — it is a genuine no-op on the target, verified on jetkvm-sdg-02.
+hid_selftest() {
+  if [ "$DRY_RUN" = "1" ]; then
+    log "SELFTEST SKIPPED: DRY_RUN=1, this catcher will never write to $HID"
+    return 0
+  fi
+  if [ ! -c "$HID" ]; then
+    log "SELFTEST FAILED: $HID is not a character device — THIS CATCHER CANNOT CAPTURE"
+    return 1
+  fi
+  _err=$(printf '\x00\x00\x00\x00\x00\x00\x00\x00' 2>&1 >"$HID")
+  if [ -n "$_err" ]; then
+    log "SELFTEST FAILED: cannot write $HID ($_err) — THIS CATCHER CANNOT CAPTURE"
+    return 1
+  fi
+  log "SELFTEST OK: $HID accepted an empty key-release report; the capture path works"
+  return 0
+}
+
+fire() {
+  log "FREEZE CONFIRMED — $TARGET silent x$FAILS ($LAST_RESULT), witness $WITNESS still answering."
+  if [ "$DRY_RUN" = "1" ]; then
+    log "  DRY RUN — would send Ctrl+Alt+F12, Alt+SysRq+W, Alt+SysRq+C. Sending nothing."
+    return 0
+  fi
+  if [ ! -c "$HID" ]; then
+    log "  ABORT: $HID is gone — cannot capture this freeze"
+    return 1
+  fi
+  # Modifier byte: 0x01 LeftCtrl, 0x04 LeftAlt. Keycodes: 0x45 F12,
+  # 0x46 PrintScreen (== SysRq), 0x1a W, 0x06 C.
+  send_report '\x05\x00\x45\x00\x00\x00\x00\x00' 'Ctrl+Alt+F12 (switch to VT12, the kernel-log console)' || return 1
+  send_report '\x04\x00\x46\x1a\x00\x00\x00\x00' 'Alt+SysRq+W (blocked-task dump into the ring buffer)' || return 1
+  # Let the W dump finish landing in the ring buffer before panicking, or the
+  # panic output evicts the very thing we came for.
+  sleep "$SYSRQ_GAP"
+  send_report '\x04\x00\x46\x06\x00\x00\x00\x00' 'Alt+SysRq+C (forced panic -> kmsg_dump -> efi_pstore)' || return 1
+  log "  CAPTURE SENT — after $TARGET resets, read /sys/fs/pstore on it"
+  return 0
+}
+
+log "catcher started: target=$TARGET:$TARGET_PORT witness=$WITNESS:$WITNESS_PORT hid=$HID dry_run=$DRY_RUN fails_to_fire=$CONSECUTIVE_FAILS"
+hid_selftest || log "continuing anyway so the log keeps a record, but a capture WILL FAIL until $HID works"
+
+while true; do
+  if probe "$TARGET" "$TARGET_PORT"; then
+    if [ "$FIRED" = "1" ]; then
+      log "RECOVERED — $TARGET is answering again; check /sys/fs/pstore on it now"
+      FIRED=0
+    fi
+    if [ "$ARMED" = "0" ]; then
+      ARMED=1
+      log "ARMED — $TARGET seen healthy; the catcher will fire if it goes silent from here"
+    fi
+    if [ "$FAILS" != "0" ]; then
+      log "target recovered after $FAILS consecutive failed probe(s) — resetting the counter"
+      FAILS=0
+    fi
+    HEALTHY_POLLS=$((HEALTHY_POLLS + 1))
+    # The heartbeat is the whole point of the rewrite: positive proof that
+    # this process is alive AND armed AND seeing its target. Without it,
+    # "no log output" means nothing at all.
+    if [ "$((HEALTHY_POLLS % HEARTBEAT_EVERY))" = "0" ]; then
+      log "heartbeat — armed=$ARMED ok_polls=$HEALTHY_POLLS target=$TARGET ALIVE (${PROBE_ELAPSED}s)"
+    fi
+    sleep "$POLL_OK"
+    continue
+  fi
+
+  LAST_RESULT=$PROBE_RESULT
+
+  # Never fire at a box this catcher has not yet seen alive. Logged, not
+  # silent: the predecessor's unarmed branch was a silent `continue`, one of
+  # exactly two code paths that could produce a completely empty log.
+  if [ "$ARMED" = "0" ]; then
+    log "target $TARGET is $LAST_RESULT (${PROBE_ELAPSED}s) but catcher is NOT ARMED (never seen it healthy) — not firing"
+    sleep "$POLL_OK"
+    continue
+  fi
+
+  if ! probe "$WITNESS" "$WITNESS_PORT"; then
+    log "NETWORK FAULT? — target $TARGET is $LAST_RESULT AND witness $WITNESS is $PROBE_RESULT; both silent, so NOT firing"
+    FAILS=0
+    sleep "$POLL_OK"
+    continue
+  fi
+
+  FAILS=$((FAILS + 1))
+  log "probe FAIL $FAILS/$CONSECUTIVE_FAILS — $TARGET $LAST_RESULT, witness $WITNESS ALIVE"
+  if [ "$FAILS" -lt "$CONSECUTIVE_FAILS" ]; then
+    sleep "$POLL_FAIL"
+    continue
+  fi
+
+  if [ "$FIRED" = "1" ]; then
+    log "already fired for this freeze; waiting for $TARGET to come back"
+    sleep "$POLL_OK"
+    continue
+  fi
+
+  if fire; then
+    FIRED=1
+  else
+    log "  fire attempt did not complete; will retry after the next $CONSECUTIVE_FAILS failures"
+  fi
+  FAILS=0
+  sleep "$POLL_OK"
+done

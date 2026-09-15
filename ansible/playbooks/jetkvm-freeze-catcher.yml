@@ -1,0 +1,87 @@
+# playbooks/jetkvm-freeze-catcher.yml — reconcile the resident freeze catcher
+# on the JetKVM OOB consoles.
+#
+# Usage:
+#   task ansible:run -- playbooks/jetkvm-freeze-catcher.yml
+#   task ansible:run -- playbooks/jetkvm-freeze-catcher.yml --limit jetkvm-sdg-02
+#   task ansible:run -- playbooks/jetkvm-freeze-catcher.yml --check
+#     # real connection, real (read-only) on-device state read, reports which
+#     # files differ and whether a catcher is running, writes nothing. Unlike
+#     # jetkvm-netbird-update.yml, --check IS the dry run here: the role's
+#     # read-only raw task carries `check_mode: false` so it runs for real,
+#     # and both write halves are guarded on `not ansible_check_mode`.
+#
+# WHAT THIS ARMS. On a console where it is enabled, the catcher watches the
+# NAS that console is wired to and, if the NAS stops answering its SSH banner
+# while an independent witness still answers, sends Alt+SysRq+W then
+# Alt+SysRq+C from the console's own emulated keyboard. SysRq-C HARD-CRASHES
+# the target — deliberately, because a forced panic is what makes kmsg_dump
+# write the ring-buffer tail into efi_pstore, which survives the reset and is
+# the only evidence these freezes ever leave.
+#
+# It is therefore DEFAULT OFF everywhere, and enablement is per host in
+# host_vars/<console>.yml. As of 2026-09-11 exactly one console is enabled:
+# jetkvm-sdg-02 (nas-sdg froze ten times in 24h). On every other console this
+# play actively DISARMS — removes the init script, stops any catcher — rather
+# than leaving whatever happens to be there, so "not enabled" means
+# "definitely not armed" and not "we didn't look".
+#
+# Offline consoles are skipped, not failed, by two independent mechanisms:
+#   1. tasks/netbox_status_gate.yml — the same allowlist gate the netbird and
+#      macros plays use (only NetBox status active/staged is targeted). This
+#      is what keeps a fleet-wide run quiet while a whole site is down.
+#   2. an explicit transport probe below — the gate carries no `status` at all
+#      under the static-inventory fallback (`ansible:run-static`), and NetBox
+#      can be stale. Belt and braces, because the whole point of a console is
+#      that you reach for it when things are already broken.
+# As of 2026-09-11 that means jetkvm-cin-01 (Cincinnati offline indefinitely,
+# and its addressing is unknown so it is deliberately left unconfigured) is
+# skipped; it picks up whatever it should have on its next reachable run.
+#
+# serial: 1 so only one console is being reconfigured at a time — these are
+# the out-of-band path to their hosts, and a bad change landing on all of
+# them simultaneously is exactly the failure this play must not cause.
+---
+- name: Reconcile the resident freeze catcher on the JetKVM OOB consoles
+  hosts: oob_kvm
+  gather_facts: false
+  serial: 1
+  pre_tasks:
+    - name: NetBox reachability gate
+      ansible.builtin.import_tasks: ../tasks/netbox_status_gate.yml
+
+    # ignore_unreachable + register, rather than letting the role's first raw
+    # task fail: an unreachable console under serial: 1 without
+    # any_errors_fatal doesn't abort the run, it just fails loudly every
+    # single time — noisy enough to bury a real new failure among expected
+    # noise (the same reasoning as the NetBox gate's own header).
+    #
+    # `raw`, NOT wait_for_connection. wait_for_connection looks like the right
+    # tool and is not: it proves the connection by running the `ping` MODULE,
+    # which needs a python interpreter on the target. These devices have none
+    # (confirmed live 2026-09-10 — `ansible -m ping` against jetkvm-sdg-02
+    # gives "The module interpreter '/usr/bin/python3' was not found", rc
+    # 127), so it can never succeed here: it burns its whole timeout and then
+    # fails, on a device that was answering SSH the entire time. `raw` is the
+    # only probe that means anything on this device class.
+    - name: Probe the console's SSH transport
+      check_mode: false
+      ansible.builtin.raw: echo reachable
+      register: _jetkvm_reachable
+      changed_when: false
+      ignore_unreachable: true
+      failed_when: false
+
+    - name: Note that this console is being skipped as unreachable
+      when: _jetkvm_reachable.unreachable | default(false)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is unreachable — skipping. It will pick up
+          its intended freeze-catcher state on the next run that reaches it.
+
+    - name: Skip unreachable consoles
+      when: _jetkvm_reachable.unreachable | default(false)
+      ansible.builtin.meta: end_host
+
+  roles:
+    - jetkvm_freeze_catcher

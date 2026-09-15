@@ -15,6 +15,26 @@ The OpenTaco Cloud state backend is a separate credential: a CLI token from
 `tofu login otaco.app`, stored in `~/.terraform.d/credentials.tfrc.json`,
 not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
 
+**The NetBox dynamic-inventory token is NOT in `.env`.** `.env` carries only
+the AWS S3 keys, so `task ansible:run` — which is `op run --env-file ../.env
+-- ansible-playbook -i netbox_inventory.yml` — does not supply it.
+`netbox_inventory.yml` reads `NETBOX_TOKEN` from the environment, and the
+value lives at `op://nas-overlay/netbox-ansible-inventory-token/token`:
+
+```sh
+NETBOX_TOKEN=$(op read "op://nas-overlay/netbox-ansible-inventory-token/token") \
+  ansible-playbook -i netbox_inventory.yml playbooks/<play>.yml --limit <host>
+```
+
+This fails *silently* and misleadingly without the token: NetBox answers
+`Permission denied` on `/api/status/`, the inventory falls back to implicit
+localhost, and the play reports `skipping: no hosts matched` rather than any
+authentication error. Do not read that as "the host is not in inventory", and
+do not reach for `ansible:run-static` — that wraps the same `op run` and is
+for when NetBox itself is down. Resolve the token once into a variable per
+run; every `op` invocation raises a biometric prompt, so a retry loop while
+diagnosing turns into a prompt storm for the operator.
+
 ## OpenTofu (`environments/home`)
 
 - State lives in OpenTaco Cloud (`cloud.tf`), not S3. A `cloud` block and a
@@ -203,6 +223,51 @@ not 1Password. `task init`/`plan`/`apply` need both this and the AWS creds.
      (`group_vars/oob_kvm.yml`) — the ephemeral runner has no persisted
      `known_hosts`, and pinning one wouldn't survive a firmware reflash
      anyway (dropbear regenerates host keys on every boot after that).
+
+## JetKVM freeze catcher (`roles/jetkvm_freeze_catcher`)
+
+- This role arms something that **hard-crashes a NAS on purpose**
+  (`Alt+SysRq+C`, so a forced panic writes the kernel ring-buffer tail into
+  `efi_pstore` where it survives the watchdog reset). It is default-OFF on
+  every console and enabled per host in `host_vars/`. As of 2026-09-11 that
+  is `jetkvm-sdg-02` only. Don't widen it casually, and don't "helpfully"
+  add a fleet-wide default.
+- **Not enabled means actively disarmed**, not skipped: on any console
+  where the flag is false the role removes the init script and kills any
+  running catcher. That is deliberate — a console must not be able to keep
+  an armed catcher it is no longer supposed to have, including after a
+  firmware reflash and reinstall.
+- **Each console probes its NAS over the LAN, never over netbird**, using
+  IPv4 literals (enforced by an assert). Netbird names do not resolve on
+  these devices at all — measured 2026-09-11, `nas-sdg.netbird.cloud` times
+  out from jetkvm-sdg-02 and `nas-sct.netbird.cloud` is NXDOMAIN from
+  jetkvm-sct-01, while both LAN literals answer instantly. Beyond that, a
+  watcher that fails under the same conditions as its target is not a
+  watcher: it has to keep working when the overlay is down.
+- The consoles are **not all on the Management VLAN**, despite what the
+  provisioning runbook implies: `jetkvm-sct-01` is `172.29.41.102`, sharing
+  nas-sct's `/24`, while `jetkvm-sdg-02` is `172.29.10.6` and reaches
+  nas-sdg across the UDM. That is exactly why target/witness are per-host
+  variables and not a shared default.
+- **This role transfers files as base64 over Ansible's own connection**,
+  deliberately NOT the `delegate_to: localhost` + plain-`ssh` pattern that
+  `jetkvm-netbird-update.yml` and `jetkvm_macros` use. A second plain `ssh`
+  opens a fresh connection that must re-authenticate; the role's first live
+  run died there with "communication with agent failed" when the
+  1Password SSH agent locked, while Ansible's own multiplexed connection
+  (`ControlMaster`/`ControlPersist` from `ansible.cfg`) kept working
+  throughout. Agent flakiness is the precise failure this catcher exists to
+  escape, so it has no place in the deployment path. busybox on these
+  devices has `base64`; it does not have `stat`.
+- **`crond` is not running on these devices and there are no crontab
+  directories**, so cron is not available as a supervisor. The catcher is
+  supervised by its own `supervise.sh` in `/userdata`, started by the init
+  script.
+- When testing a probe on one of these devices, **never use `127.0.0.1` or
+  `127.0.0.2` as a fake target**: the console's own dropbear listens on
+  `0.0.0.0:22`, so any `127.x` address answers with a genuine SSH banner and
+  the test silently proves nothing. Use a port nothing owns, or `1.1.1.1:22`
+  (accepts TCP, never sends a banner — the exact freeze shape).
 
 ## Git / PRs
 
