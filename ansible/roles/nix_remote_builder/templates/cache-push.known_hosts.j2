@@ -1,0 +1,12 @@
+{{ ansible_managed | comment }}
+#
+# nas-sdg's sshd host key, keyed on the HostKeyAlias the cache-push ssh alias
+# sets rather than on an address — so re-addressing nas-sdg (LAN vs overlay)
+# does not invalidate the pin.
+#
+# Decoded from the same base64 literal nix-common's nas-cache.nix carries, so
+# there is one source of truth for the key and no second transcription to
+# drift. Re-derive after a nas-sdg reinstall with:
+#   ssh-keyscan -t ed25519 <nas-sdg> 2>/dev/null | grep -v '^#' \
+#     | awk '{printf "%s %s", $2, $3}' | base64
+{{ nix_remote_builder_cache_push_host_key_alias }} {{ nix_remote_builder_cache_push_host_key_b64 | b64decode }}

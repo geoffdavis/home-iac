@@ -104,6 +104,7 @@ tasks:
         playbooks/netbox-import.yml
         playbooks/jetkvm-netbird-update.yml
         playbooks/jetkvm-freeze-catcher.yml
+        playbooks/nix-remote-builder.yml
 
   ansible:run:
     desc: >-

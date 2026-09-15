@@ -1,0 +1,38 @@
+{{ ansible_managed | comment }}
+#
+# Keep nix builds from starving this box's AI workloads.
+#
+# WHY THIS FILE AND NOT JUST max-jobs/cores. nix's own settings are an
+# average, not a guarantee: a trusted client can override them over the
+# worker protocol, and a single derivation whose build system ignores
+# NIX_BUILD_CORES can saturate every thread on its own. The cgroup is
+# enforced by the kernel and holds in both cases.
+#
+# WHY THIS UNIT. The forced command clients run is `nix-daemon --stdio`,
+# which — running as an unprivileged user — does NOT build anything itself.
+# It proxies the worker protocol to the real daemon on
+# /nix/var/nix/daemon-socket/socket. So every build lands in
+# nix-daemon.service's cgroup, not in the ssh session's, and this drop-in is
+# the one place that catches all of them.
+[Service]
+{% if nix_remote_builder_cpu_quota %}
+# {{ nix_remote_builder_cpu_quota }} of 3200% (32 threads).
+CPUQuota={{ nix_remote_builder_cpu_quota }}
+{% endif %}
+{% if nix_remote_builder_allowed_cpus %}
+AllowedCPUs={{ nix_remote_builder_allowed_cpus }}
+{% endif %}
+{% if nix_remote_builder_cpu_weight %}
+# Below the default 100: in the slice the quota does not cover, the AI
+# workload's host-side processes win the tie rather than merely sharing.
+CPUWeight={{ nix_remote_builder_cpu_weight }}
+{% endif %}
+{% if nix_remote_builder_io_weight %}
+IOWeight={{ nix_remote_builder_io_weight }}
+{% endif %}
+{% if nix_remote_builder_memory_high %}
+# SOFT limit — throttle and reclaim, never OOM-kill (that is MemoryMax, and
+# it would turn memory pressure into failed builds). This CPU's iGPU has no
+# VRAM of its own, so model weights share system RAM with the build.
+MemoryHigh={{ nix_remote_builder_memory_high }}
+{% endif %}

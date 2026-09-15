@@ -1,0 +1,102 @@
+---
+# netbird_peer — defaults.
+
+# --- Version -------------------------------------------------------------
+# Pinned to whatever the rest of the fleet runs, not "latest". Read off
+# nas-sdg 2026-09-10 (`netbird version` → 0.77.1). The overlay is a
+# distributed system: a peer several versions ahead of the management
+# server or its neighbours is a debugging problem nobody wants to have,
+# so bumping this should be a deliberate fleet-wide act.
+netbird_peer_version: "0.77.1"
+
+# The official .deb from GitHub releases, rather than netbird's apt repo.
+# An apt repo would drift this host's version on any unrelated `apt
+# upgrade`, silently undoing the pin above. Same reasoning as the pinned
+# tarball in playbooks/jetkvm-netbird-update.yml.
+netbird_peer_deb_url: >-
+  https://github.com/netbirdio/netbird/releases/download/v{{ netbird_peer_version }}/netbird_{{ netbird_peer_version }}_linux_amd64.deb
+netbird_peer_checksums_url: >-
+  https://github.com/netbirdio/netbird/releases/download/v{{ netbird_peer_version }}/netbird_{{ netbird_peer_version }}_checksums.txt
+netbird_peer_deb_name: "netbird_{{ netbird_peer_version }}_linux_amd64.deb"
+# Where the artifacts land on the target. Not /tmp: a systemd-tmpfiles
+# sweep mid-run would be a confusing failure.
+netbird_peer_download_dir: /var/cache/netbird-install
+
+# --- Identity ------------------------------------------------------------
+# The peer name, and therefore the `<name>.netbird.cloud` FQDN other hosts
+# resolve. Must match what the fleet expects to address.
+netbird_peer_hostname: "{{ inventory_hostname }}"
+
+# --- Enrolment credential ------------------------------------------------
+# THE SETUP KEY IS NEVER IN THIS REPO. It lives in 1Password and is
+# referenced by item name, following the convention already established by
+# group_vars/nas_nixos.yml's `nixos_freeipa_vm_netbird_setup_key_op_item`
+# (and read the same way — community.general.onepassword, field=password,
+# under no_log).
+#
+# The key is only consulted when the host is NOT already registered, so a
+# converged host needs no access to 1Password at all — which is what makes
+# a second run a clean no-op and lets this play run from CI without the
+# key still existing.
+#
+# A setup key is single-use in this fleet's convention (`type: one-off`),
+# so it is CONSUMED by the first successful enrolment. Do not expect the
+# 1Password item to keep working; it is a bootstrap credential, not a
+# standing one.
+netbird_peer_setup_key_op_item: "netbird-setup-key-{{ inventory_hostname }}"
+netbird_peer_op_vault: "nas-overlay"
+
+# Whether a missing setup key is FATAL. Default false, deliberately: this
+# role shares a play with nix_remote_builder, which keeps a box that is
+# taking real fleet builds converged. Aborting the play over an absent
+# credential would stop that work for the sake of an enhancement whose
+# absence costs nothing at runtime — cache-push simply stays on the LAN
+# address, which works. The prerequisite is announced loudly instead.
+#
+# Set true once enrolment is meant to be a settled fact (e.g. in CI), so a
+# host that silently loses its peer identity is caught rather than quietly
+# falling back.
+netbird_peer_required: false
+
+# --- Expected group membership (documentation + post-check) --------------
+# Groups are assigned by the SETUP KEY's auto-groups, in the netbird
+# console — there is no API-free way to set them from here, and the control
+# plane is dashboard-only (see the topology note). These names exist so the
+# role can TELL YOU what it expected, not so it can enforce it.
+#
+# class-builder, because that is the group whose two policies are exactly
+# this host's two needs (verified against the live API 2026-09-10):
+#   nas-to-builder-ssh    class-nas     -> class-builder    tcp/22
+#     — inbound: nas-sdg dispatching remote builds here.
+#   builder-to-hub-ssh    class-builder -> class-nas-hub    tcp/22
+#     — outbound: the cache-push post-build-hook reaching nas-sdg.
+# Its existing members (tourmaline, torrey) are the fleet's other build
+# clients, and tourmaline sits on the same VLAN 30 as this host — useful
+# evidence that a class-builder peer here behaves.
+#
+# site-sdg, matching every other San Diego peer; the per-site rollup groups
+# are how the enrolment keys for tourmaline/torrey/windowpi/pacificbeach are
+# all shaped.
+netbird_peer_expected_groups:
+  - class-builder
+  - site-sdg
+
+# --- Behaviour -----------------------------------------------------------
+# Enrolment runs DETACHED from the ssh session, via systemd-run. `netbird
+# up` brings up wt0 and installs overlay routes; if that ever disturbed the
+# LAN path this play arrives over, an inline run would be killed halfway
+# and leave the host half-enrolled — the worst outcome. Detached, the
+# enrolment completes either way and the host comes back reachable on at
+# least one of the two paths.
+netbird_peer_enrol_detached: true
+netbird_peer_enrol_unit: netbird-enrol
+# How long to wait for the transport to come back, and then for the
+# management connection to establish.
+netbird_peer_reconnect_timeout: 120
+netbird_peer_connect_retries: 20
+netbird_peer_connect_delay: 6
+
+# Read-only post-checks: peer is Connected, and the LAN address still
+# answers. The second matters because this play's whole risk is that
+# joining an overlay disturbs the LAN path the box is currently reached on.
+netbird_peer_verify: true

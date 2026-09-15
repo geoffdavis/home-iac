@@ -15,6 +15,32 @@ all:
           # Hub — reachable on the LAN from the controller.
           ansible_host: 172.29.50.20
 
+    # nix_builders: hosts provisioned as ssh-ng nix remote build ENDPOINTS
+    # by playbooks/nix-remote-builder.yml. Deliberately scoped to non-NixOS
+    # boxes — the NixOS builders (nas-sdg, nas-sct, torrey, tourmaline)
+    # declare the same endpoint natively in the nix-personal repo, and this
+    # group must never grow one of them or the two definitions would fight.
+    #
+    # The CLIENT half (nix.buildMachines entries, speedFactor, the
+    # /etc/nix/builder_ed25519 credential) also lives in nix-personal; this
+    # repo only owns what runs on the endpoint itself.
+    nix_builders:
+      hosts:
+        amd-halo:
+          # AMD Ryzen AI Developer Platform ("rex") — Ryzen AI MAX+ 395,
+          # 32 threads, 125 GiB. Runs GPU AI workloads between builds, which
+          # is why the role caps the daemon's CPU.
+          #
+          # ADDRESSED BY IP, NOT NAME, and both halves of that are
+          # deliberate. The name is amd-halo.home.geoffdavis.com — NOT
+          # amd-halo.iot.home.geoffdavis.com, which does not exist — and it
+          # only resolves through the internal resolver (172.29.50.1). A
+          # controller on a machine using any other resolver gets NXDOMAIN,
+          # so the literal address is the form that works from every
+          # controller this play might run from. Same convention as nas-sdg
+          # above.
+          ansible_host: 172.29.30.23
+
     ipa_replicas:
       # FreeIPA replica VMs — libvirt/KVM guests on the NixOS hosts,
       # provisioned by the nixos_freeipa_vm role (playbooks/nixos-freeipa-vm.yml).

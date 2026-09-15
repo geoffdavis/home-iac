@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: geoffdavis
+  description: >-
+    Provision a non-NixOS Linux host as an ssh-ng nix remote build endpoint
+    for the fleet (Determinate Nix, dedicated protocol-only user, pinned
+    client keys, systemd build capping, sshd PerSourcePenalties workaround)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    # "Debian" here means Debian-DERIVED. amd-halo's actual
+    # ansible_os_family is "AMD Ryzen AI Developer Platform"; galaxy_info
+    # has no vocabulary for that, and the role gates on ansible_pkg_mgr
+    # rather than on os_family precisely because of it.
+    - name: Debian
+      versions: ["all"]
+dependencies: []

@@ -1,0 +1,14 @@
+{{ ansible_managed | comment }}
+#
+# The fleet's remote-build client keys, each pinned to `nix-daemon --stdio`.
+#
+# `restrict` = no pty, no agent/port/X11 forwarding, no user rc. Together
+# with the forced command that is the entire security model of this account:
+# a client key grants "inject store paths and build", never a login.
+#
+# This file is managed as a whole. A key removed from
+# roles/nix_remote_builder/defaults/main.yml disappears from here on the
+# next converge.
+{% for key in nix_remote_builder_client_keys %}
+restrict,command="{{ nix_remote_builder_forced_command }}" {{ key }}
+{% endfor %}

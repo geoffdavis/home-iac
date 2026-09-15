@@ -1,0 +1,281 @@
+---
+# nix_remote_builder — defaults.
+#
+# Every value here reproduces state that was first established BY HAND on
+# amd-halo (2026-09-10) to prove the endpoint works. The role's job is to
+# converge on exactly that, idempotently; changing a default here changes
+# the live box on the next run, so treat these as the source of truth
+# rather than as suggestions.
+
+# --- Nix installation ----------------------------------------------------
+# The role installs Determinate Nix via the Determinate Systems installer.
+# NOTE THE NAMING TRAP: the subcommand is `install linux`, but what lands is
+# Determinate Nix (determinate-nixd, /usr/local/bin/determinate-nixd, an
+# /etc/nix/nix.conf the installer rewrites), NOT upstream nix. Everything
+# downstream in this role — the `!include nix.custom.conf` split, the
+# `nix-daemon.service` unit shape — follows from that.
+nix_remote_builder_install_nix: true
+# Pinned, not "latest": an installer version bump is a deliberate act, and
+# the daemon unit / nix.conf layout this role writes into is version-coupled.
+nix_remote_builder_installer_version: "3.22.3"
+nix_remote_builder_installer_url: >-
+  https://install.determinate.systems/nix/tag/v{{ nix_remote_builder_installer_version }}/nix-installer-x86_64-linux
+# The installer's own idempotency marker. It is not re-runnable (a second
+# `install` aborts with "already installed"), so the install task is guarded
+# on this file rather than on a `changed_when` heuristic.
+nix_remote_builder_install_receipt: /nix/receipt.json
+
+# --- The builder identity ------------------------------------------------
+# A dedicated system account, NOT geoff and NOT root. Matches the fleet's
+# NixOS builders (nix-personal hosts/tourmaline/builder.nix,
+# modules/nas/nix-cache.nix) so one client key shape works everywhere.
+nix_remote_builder_user: nix-remote-builder
+nix_remote_builder_group: nix-remote-builder
+nix_remote_builder_home: /var/lib/nix-remote-builder
+# A REAL shell is required and this is not cosmetic: sshd runs the forced
+# command through the login shell, so /usr/sbin/nologin here makes every
+# remote build fail at connect time.
+nix_remote_builder_shell: /bin/bash
+nix_remote_builder_comment: "ssh-ng remote-build endpoint (protocol-only key)"
+
+# Resident user manager. Same reasoning as nix-personal's
+# hosts/tourmaline/builder.nix: every remote build is an ssh login, each
+# login starts a transient user@<uid>.service, and work that lands in that
+# unit's teardown window dies. Lingering keeps one manager up instead of
+# churning one per build.
+nix_remote_builder_enable_linger: true
+
+# --- Client keys ---------------------------------------------------------
+# The fleet's canonical remote-build CLIENT list. Upstream source of truth
+# is nix-personal's modules/builder-client-keys.nix; this list must track
+# it. It carries ONE extra entry that module does not (yet) have: nas-sdg's
+# own /etc/nix/builder_ed25519, because on this box nas-sdg is a client
+# rather than the builder.
+#
+# Each key is pinned to `nix-daemon --stdio` with `restrict,` — no shell,
+# no forwarding, no pty. That pin is the entire security model of this
+# account: possession of a client key grants "inject store paths and build",
+# never a login.
+nix_remote_builder_forced_command: /nix/var/nix/profiles/default/bin/nix-daemon --stdio
+nix_remote_builder_client_keys:
+  # birdrock — /etc/nix/builder_ed25519
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEsQ3qGX49zbrSaEVKjWi4jiRHkbHiGU7s45iWdOhLJ+ nix-builder@birdrock"
+  # windansea — /etc/nix/builder_ed25519
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFZvxPyIxs3onCgRJ/I+/XfCzPN4jVwH2MLs1AgcayxP nix-builder@windansea"
+  # windansea's CI runner — a distinct credential on the same physical host.
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEDgRqmS7TpdId64AZqnjM2QKz3r09eZH2erTQhSDU4s nix-builder@windansea-ci-runner"
+  # nas-sct — /etc/nix/builder_ed25519
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKqZdn0+GvEYayUO5p8MNWffMroSQEbbrY2gQqqlKwcT nix-builder@nas-sct"
+  # slurricane — /etc/nix/builder_ed25519
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPQ+KghSLByx41JpiAe5Pxwv4dxyPKYy82V3JczmLzIf nix-builder@slurricane"
+  # nas-sdg — /etc/nix/builder_ed25519. The fleet HUB, and the only entry
+  # here with no counterpart in nix-personal's builder-client-keys.nix:
+  # nas-sdg is a builder everywhere else, so it has never needed to be
+  # authorised AS a client before.
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHJgXL2WGqtVi6yc92XVQMXBAT4jxZsdmAtiElZhCu5R nix-builder@nas-sdg"
+
+# --- nix.conf settings ---------------------------------------------------
+# Determinate owns /etc/nix/nix.conf and says so in its header ("do not
+# modify! this file will be replaced!"). It `!include`s nix.custom.conf,
+# which is where anything of ours goes. The installer writes a two-line
+# preamble into that file too, so we manage a MARKED BLOCK inside it rather
+# than templating the whole file out from under the installer.
+nix_remote_builder_custom_conf: /etc/nix/nix.custom.conf
+
+# `extra-trusted-users`, not `trusted-users`: additive, so root keeps its
+# trust without us having to restate a list we do not own. Verified live on
+# amd-halo — `nix config show` reports `trusted-users = root
+# nix-remote-builder` afterwards.
+#
+# This is the setting without which the whole endpoint is inert: ssh-ng
+# injects derivations and closures into this store, and an untrusted user
+# may not do that. Symptom when missing is a build refusal at dispatch, not
+# a connection failure, so it reads like a client-side problem.
+nix_remote_builder_trust_user: true
+
+# See the capping discussion in README.md. Short version: these are the
+# TUNING half and the systemd CPUQuota below is the GUARANTEE half. A
+# trusted client can hand the daemon its own build settings over the worker
+# protocol, and a single derivation with a greedy build system can saturate
+# everything regardless of max-jobs — so these numbers shape how nix
+# parallelises under the ceiling, they never establish the ceiling.
+#
+# 8 jobs x 4 cores = 32 nominal build threads against a 30-thread quota:
+# deliberately just over, so the quota stays saturated while jobs sit in
+# configure/link phases that do not parallelise.
+nix_remote_builder_max_jobs: 8
+nix_remote_builder_cores: 4
+
+# Left empty on amd-halo: it is x86_64-linux native and no binfmt emulation
+# is registered here on purpose (emulated builds belong on nas-sdg, and this
+# box's value is native speed). Kept as knobs because the two halves are
+# genuinely separate — see nix-personal hosts/tourmaline/builder.nix, where
+# advertising a platform without its matching system-feature produced a
+# builder that accepted armv7l dispatch and then refused every armv7l build.
+nix_remote_builder_extra_platforms: []
+nix_remote_builder_system_features: []
+
+# --- CPU / memory capping ------------------------------------------------
+# This box does AI work between builds and builds must not starve it. The
+# AI work is GPU-resident (owner's measurement) — the host side of it is a
+# feeder, not a compute load — so the requirement is a small guaranteed
+# slice of CPU rather than a large reservation. See README.md.
+nix_remote_builder_capping: true
+nix_remote_builder_capping_dropin: /etc/systemd/system/nix-daemon.service.d/10-build-capping.conf
+
+# 3000% = 30 of 32 threads. A HARD ceiling enforced by the kernel on the
+# whole nix-daemon cgroup, so it holds no matter what a trusted client asks
+# for and no matter how greedy one derivation's build system is. That is the
+# point: max-jobs gives an average, a quota gives a guarantee.
+nix_remote_builder_cpu_quota: "3000%"
+
+# Deliberately EMPTY, and this is a decision rather than an omission. A
+# cpuset (`AllowedCPUs=...`) would pin builds to fixed CPUs and hand the AI
+# feeder dedicated silicon, but it also stops builds using an idle box —
+# and with the AI work on the GPU there is no cache-thrash argument for
+# pinning. CPUQuota lets builds have the whole machine when nothing else
+# wants it while still guaranteeing the headroom. Set this (e.g.
+# "2-31") only if the feeder turns out to need specific CPUs.
+nix_remote_builder_allowed_cpus: ""
+
+# Below the default 100, so that in the ~1-in-15 slice the quota does not
+# cover, the AI feeder wins the scheduler tie rather than merely sharing.
+nix_remote_builder_cpu_weight: 20
+nix_remote_builder_io_weight: 20
+
+# SOFT limit (throttle + reclaim), deliberately not MemoryMax (OOM-kill).
+# 125 GiB total with ~29 GiB in use at the time of writing. Memory matters
+# MORE here than on a discrete-GPU box, not less: the Ryzen AI MAX+ 395's
+# iGPU has no VRAM of its own, so model weights live in the same system RAM
+# a `-j32` nixpkgs build would otherwise claim.
+nix_remote_builder_memory_high: "48G"
+
+# --- sshd PerSourcePenalties ---------------------------------------------
+# OpenSSH 9.8+ penalises a source IP that opens connections and closes them
+# WITHOUT authenticating — which is ordinary nix client behaviour, not
+# abuse. This is an ALREADY-OBSERVED failure on this fleet: on tourmaline it
+# locked windansea out entirely
+# ("srclimit_penalise: ... activating ipv4 penalty ... connections without
+# attempting authentication"). amd-halo runs OpenSSH 10.0p2 and shipped
+# `noauth:1`, so it is exposed.
+#
+# `noauth:0` disables exactly the class nix trips and leaves crash/authfail/
+# invaliduser/grace-exceeded armed — deliberately NOT PerSourcePenaltyExemptList,
+# which would disable every penalty class for a whole address range.
+nix_remote_builder_sshd_penalties: true
+nix_remote_builder_sshd_dropin: /etc/ssh/sshd_config.d/10-nix-remote-builder.conf
+# Debian's unit is `ssh.service`, with `sshd.service` only as an alias.
+nix_remote_builder_sshd_service: ssh.service
+
+# --- Binary-cache push ---------------------------------------------------
+# Publish this host's build outputs to nas-sdg's FILE-BASED binary cache, so
+# closures built here do not get rebuilt everywhere else in the fleet.
+#
+# An Ansible port of nix-common's modules/cache-push.nix. That is a
+# NixOS/darwin module and cannot apply to a Debian-derived box, so the
+# EFFECT is reproduced here; read that module before changing any number
+# below, because its comments are the record of why each one is what it is.
+#
+# A file cache, not nas-sdg's Harmonia cache: Harmonia serves nas-sdg's LIVE
+# /nix/store, so anything pushed there is an unrooted store path that
+# nix-collect-garbage can reclaim. The file cache sits outside the store.
+nix_remote_builder_cache_push: true
+
+# THE CREDENTIAL, deliberately SEPARATE from the remote-build one. A builder
+# key can inject store paths into the receiving host; a cache key only
+# writes NAR files. Conflating them widens both — see nix-personal
+# modules/builder-client-keys.nix. Same path nas-sct uses for the same job.
+#
+# Generated BY THIS ROLE, idempotently: created only when absent, never
+# regenerated. The role prints the public half at the end of a run.
+nix_remote_builder_cache_push_key: /etc/nix/nix-cache-push_ed25519
+nix_remote_builder_cache_push_key_comment: "nix-cache-push@{{ inventory_hostname }}"
+
+# The ssh alias the post-build-hook copies through. Name and shape match
+# nix-common's nas-cache.nix so the two are recognisably the same thing.
+nix_remote_builder_cache_push_alias: nix-cache-push-nas-sdg
+nix_remote_builder_cache_push_user: nix-cache-push
+
+# THE DESTINATION ADDRESS, AND WHY IT IS A CONDITION RATHER THAN A LITERAL.
+#
+# nix-common's nas-cache.nix — the module this role ports — addresses
+# nas-sdg as `nas-sdg.netbird.cloud`, and that is the form the whole fleet
+# uses. When this role was first written amd-halo was NOT a netbird peer:
+# no netbird binary, and that name did not resolve there, so the overlay
+# name would have failed closed on EVERY push. The LAN address
+# (172.29.50.20:22, the same one inventory.yml uses for nas-sdg) was chosen
+# instead, as a deliberate and documented deviation.
+#
+# The netbird_peer role now enrols this host — it runs FIRST in
+# playbooks/nix-remote-builder.yml, precisely so this expression can see its
+# result — which retires that deviation. Written as a condition rather than
+# flipped to a literal, for two reasons:
+#
+#   * SELF-HEALING IN THE RIGHT DIRECTION. Enrolment depends on a
+#     human-created setup key. Until that exists the host is not a peer and
+#     the overlay name does not resolve, so this keeps the working LAN path
+#     until the moment enrolment actually succeeds — then moves to the
+#     overlay name on that same run. No follow-up edit, and no window where
+#     the hook points somewhere unreachable.
+#
+#   * THE LAN REASONING STAYS LIVE rather than decaying into a comment about
+#     a branch nobody takes. If this host is ever un-enrolled or rebuilt, the
+#     fallback is still correct and still explained.
+#
+# `netbird_peer_enrolled` is a public fact set by the netbird_peer role.
+# The `| default(false)` matters: it lets this role stand alone, choosing
+# the LAN address when run without netbird_peer ahead of it.
+nix_remote_builder_cache_push_host_overlay: "nas-sdg.netbird.cloud"
+nix_remote_builder_cache_push_host_lan: "172.29.50.20"
+nix_remote_builder_cache_push_host: >-
+  {{ nix_remote_builder_cache_push_host_overlay
+     if (netbird_peer_enrolled | default(false) | bool)
+     else nix_remote_builder_cache_push_host_lan }}
+nix_remote_builder_cache_push_port: 22
+nix_remote_builder_cache_push_host_comment: >-
+  {{ 'nas-sdg over the netbird overlay, same as every other fleet host.'
+     if (netbird_peer_enrolled | default(false) | bool)
+     else 'nas-sdg over the LAN: this host is not (yet) a netbird peer, so
+     the fleet-standard nas-sdg.netbird.cloud name does not resolve here.
+     Enrolling it (netbird_peer role) moves this to the overlay name
+     automatically.' }}
+
+# nas-sdg's sshd host key, base64, copied verbatim from nas-cache.nix's
+# `builderPublicHostKey` so there is one source of truth fleet-wide.
+# Verified against the live host 2026-09-10.
+#
+# The pin is keyed on the HostKeyAlias, so the LAN/overlay address choice
+# above does not invalidate it.
+nix_remote_builder_cache_push_host_key_alias: nix-builder-nas-sdg
+nix_remote_builder_cache_push_host_key_b64: >-
+  c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUV2YzgwdFcrNEhMNW9mb0kzRkduVk1XT3ByZHN3cjhyZitNNzFCRys0UDU=
+nix_remote_builder_cache_push_known_hosts: /etc/nix/nix-cache-push.known_hosts
+
+# System-wide, NOT /root/.ssh/config: nix-daemon.service runs with an empty
+# environment, so the hook's ssh has no HOME and never reads a user config.
+# `10-` keeps it ahead of Debian's 20-systemd-ssh-proxy.conf, and
+# /etc/ssh/ssh_config's Include sits above its own `Host *` block, so this
+# wins under ssh's first-value-wins rule.
+nix_remote_builder_cache_push_ssh_dropin: /etc/ssh/ssh_config.d/10-nix-cache-push.conf
+nix_remote_builder_cache_push_hook: /etc/nix/cache-push-hook.sh
+
+# The three bounds, innermost first. The wall-clock one must stay ABOVE the
+# other two or it preempts them and can only ever kill transfers that were
+# working. Full account in templates/cache-push-hook.sh.j2.
+nix_remote_builder_cache_push_connect_timeout: 4
+nix_remote_builder_cache_push_alive_interval: 15
+nix_remote_builder_cache_push_alive_count: 3
+nix_remote_builder_cache_push_timeout: 600
+# NOT decoration: plain `timeout N` sends SIGTERM and then waits forever.
+# Four pushes without this wedged nas-sdg's GC for 4.4 hours on 2026-08-16.
+nix_remote_builder_cache_push_kill_after: 60
+
+# Absolute paths — the hook runs from nix-daemon with an empty environment,
+# so nothing may rely on PATH.
+nix_remote_builder_timeout_bin: /usr/bin/timeout
+nix_remote_builder_nix_bin: /nix/var/nix/profiles/default/bin/nix
+
+# --- Post-convergence verification ---------------------------------------
+# Read-only assertions that the settings whose failure modes are SILENT
+# (trusted-users, the CPU quota, the push credential) actually took effect.
+nix_remote_builder_verify: true

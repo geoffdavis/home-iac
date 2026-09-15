@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: geoffdavis
+  description: >-
+    Enrol a Debian-family host in the netbird overlay (pinned .deb,
+    1Password-backed one-off setup key, detached enrolment, LAN-path
+    regression check)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    # "Debian" means Debian-DERIVED. amd-halo's actual ansible_os_family is
+    # "AMD Ryzen AI Developer Platform"; the role gates on ansible_pkg_mgr
+    # rather than os_family precisely because of that.
+    - name: Debian
+      versions: ["all"]
+dependencies: []

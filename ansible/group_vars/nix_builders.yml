@@ -1,0 +1,19 @@
+---
+# Connection settings for the non-NixOS nix remote builders.
+#
+# Unlike nas_nixos, there is no dedicated `ansible` automation account on
+# these boxes: they are hand-provisioned developer platforms, and `geoff`
+# is the account that exists with passwordless sudo. That is a deliberate,
+# bounded difference — the least-privilege identity on these hosts is the
+# BUILDER account (nix-remote-builder), which is protocol-only and which
+# this role creates. Ansible's own login is a separate concern and stays
+# the human admin account until one of these hosts becomes permanent
+# enough to warrant its own service user.
+ansible_user: geoff
+ansible_become: true
+ansible_become_method: ansible.builtin.sudo
+
+# Do NOT set ansible_ssh_private_key_file here: geoff's key is the
+# interactive 1Password SSH-agent identity, which the agent offers itself.
+# Pinning a file path (as group_vars/nas_nixos.yml does for op-ansible)
+# would break the agent path without gaining anything.
