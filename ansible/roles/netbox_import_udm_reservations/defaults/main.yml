@@ -4,7 +4,7 @@
 # NetBox -> UDM sync (unifi_network_ip_reservation) starts from a NetBox
 # that already matches the UDM. See this role's README.
 
-netbox_import_udm_reservations_netbox_url: "http://netbox.mgmt.home.geoffdavis.com:8080"
+netbox_import_udm_reservations_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
 
 # Write-enabled v2 token of the `ansible` NetBox service account (the same
 # account netbox_import_udm_dns_records uses). Its ObjectPermission
