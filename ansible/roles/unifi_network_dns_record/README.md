@@ -124,8 +124,8 @@ every limitation the `ipam.IPAddress` fallback had:
 | `unifi_network_dns_record_creds_op_vault` | `Automation` | 1P vault name |
 | `unifi_network_dns_record_source` | `static` | `static` or `netbox` — see "Sync model" |
 | `unifi_network_dns_record_records` | `[]` | List of record dicts (source: `static`, see below) |
-| `unifi_network_dns_record_netbox_url` | `http://172.29.10.20:8080` | NetBox base URL (source: `netbox`) |
-| `unifi_network_dns_record_netbox_host_header` | `netbox.mgmt.home.geoffdavis.com` | Explicit `Host` header (reached by IP, not name) |
+| `unifi_network_dns_record_netbox_url` | `https://netbox.mgmt.home.geoffdavis.com` | NetBox base URL (source: `netbox`) |
+| `unifi_network_dns_record_netbox_host_header` | `netbox.mgmt.home.geoffdavis.com` | Explicit `Host` header (redundant now that the URL is the name; kept for overrides) |
 | `unifi_network_dns_record_netbox_validate_certs` | `true` | NetBox cert validation |
 | `unifi_network_dns_record_netbox_token_op_item` | `netbox-ansible-inventory-token` | 1P item — reuses the read-only inventory token (live-confirmed it can also read `netbox_dns.*`) |
 | `unifi_network_dns_record_netbox_token_op_vault` | `nas-overlay` | 1P vault name |

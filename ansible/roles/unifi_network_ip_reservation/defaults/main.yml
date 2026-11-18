@@ -31,7 +31,7 @@ unifi_network_ip_reservation_creds_username_field: "username"
 unifi_network_ip_reservation_creds_password_field: "password"
 
 # --- NetBox connection -------------------------------------------------
-unifi_network_ip_reservation_netbox_url: "http://netbox.mgmt.home.geoffdavis.com:8080"
+unifi_network_ip_reservation_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
 unifi_network_ip_reservation_netbox_validate_certs: true
 
 # Read-only NetBox API token, 1Password-sourced. Deliberately a

@@ -32,9 +32,7 @@ in the same vault, used only for `nix-personal`'s own provisioning of the
 NetBox container) and the read-only token Task 3's ongoing sync will use
 later.
 
-1. In the NetBox UI (`http://netbox.mgmt.home.geoffdavis.com:8080`, or
-   `http://172.29.10.20:8080` with a `Host: netbox.mgmt.home.geoffdavis.com`
-   header), log in as `admin` and go to your user menu -> **API Tokens**
+1. In the NetBox UI (`https://netbox.mgmt.home.geoffdavis.com`, from VLAN 10), log in as `admin` and go to your user menu -> **API Tokens**
    -> **Add a token**.
    - **Write enabled: yes.** NetBox 4.6+ tokens carry a `write_enabled`
      flag independent of the underlying user's own permissions -- this is

@@ -75,13 +75,11 @@ unifi_network_dns_record_records: []
 
 # --- NetBox connection (source: netbox only) --------------------------
 # Same host as ../../../hosts/nas-sdg/apps/netbox.nix (nix-personal).
-# Reached over VLAN 10 by IP + explicit Host header, not the
-# netbox.mgmt.home.geoffdavis.com name -- matches netbox_import_udm_state
-# and netbox_inventory.yml's own reasoning: this role has no business
-# depending on UDM DNS resolving correctly on the machine running
-# ansible-playbook, and ALLOWED_HOSTS on the container rejects a Host
-# header it doesn't recognize either way.
-unifi_network_dns_record_netbox_url: "http://172.29.10.20:8080"
+# Reached by name over TLS (nginx on nas-sdg's VLAN 10 address, since
+# 2026-11-18) -- see netbox_import_udm_state's defaults for why the old
+# IP + Host-header form had to go. The Host header now repeats the URL's
+# host and is kept only as an override point.
+unifi_network_dns_record_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
 unifi_network_dns_record_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
 unifi_network_dns_record_netbox_validate_certs: true
 

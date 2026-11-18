@@ -73,14 +73,9 @@
 # uses -- so this is cosmetic, not a routing risk; noted so the warning
 # doesn't get mistaken for something broken by this change.
 plugin: netbox.netbox.nb_inventory
-api_endpoint: http://172.29.10.20:8080
+api_endpoint: https://netbox.mgmt.home.geoffdavis.com
 token: "{{ lookup('ansible.builtin.env', 'NETBOX_TOKEN') }}"
 validate_certs: true
-headers:
-  # ALLOWED_HOSTS on the NetBox container requires this exact Host header
-  # when reached by IP (hosts/nas-sdg/apps/netbox.nix, nix-personal) --
-  # same requirement every other script touching this instance has hit.
-  Host: netbox.mgmt.home.geoffdavis.com
 
 device_query_filters:
   - role: server
