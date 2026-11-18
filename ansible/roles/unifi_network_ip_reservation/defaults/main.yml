@@ -38,9 +38,15 @@ unifi_network_ip_reservation_netbox_validate_certs: true
 # *separate* 1Password item from netbox_import_udm_state's backfill
 # token (Task 2) — that one is write-scoped; this role only ever reads.
 # See the design doc's Credentials section.
-unifi_network_ip_reservation_netbox_creds_op_item: "nas-sdg netbox"
+#
+# 2026-11-18: was "nas-sdg netbox" / api_token, which belongs to NetBox's
+# local `admin` account. That account is deliberately inactive (see
+# nix-personal hosts/nas-sdg/apps/netbox.nix), so the token answered
+# "User inactive". Now a read-only (write_enabled=false) v2 token of the
+# `ansible` service account, minted for this role.
+unifi_network_ip_reservation_netbox_creds_op_item: "netbox-ansible-sync-token"
 unifi_network_ip_reservation_netbox_creds_op_vault: "nas-overlay"
-unifi_network_ip_reservation_netbox_creds_token_field: "api_token"
+unifi_network_ip_reservation_netbox_creds_token_field: "token"
 
 # Only IP addresses whose containing prefix carries this NetBox tag are
 # considered "tracked" (spec Design: "Reads NetBox status=dhcp IP

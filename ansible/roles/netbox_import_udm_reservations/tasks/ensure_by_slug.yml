@@ -1,0 +1,32 @@
+---
+# ensure_by_slug.yml: GET a NetBox object by slug, POST it if missing,
+# and record its id in _nbr_ids[_nbr_shared.key].
+
+- name: "GET {{ _nbr_shared.endpoint }} {{ _nbr_shared.body.slug }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/{{ _nbr_shared.endpoint }}/?slug={{ _nbr_shared.body.slug }}"
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    return_content: true
+  register: _nbr_found
+  no_log: true
+
+- name: "POST {{ _nbr_shared.endpoint }} {{ _nbr_shared.body.slug }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/{{ _nbr_shared.endpoint }}/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    body_format: json
+    body: "{{ _nbr_shared.body }}"
+    status_code: 201
+    return_content: true
+  register: _nbr_created
+  when: _nbr_found.json.count == 0
+  changed_when: true
+
+- name: "Record id for {{ _nbr_shared.key }}"
+  ansible.builtin.set_fact:
+    _nbr_ids: >-
+      {{ (_nbr_ids | default({})) | combine({_nbr_shared.key:
+           (_nbr_found.json.results[0].id if _nbr_found.json.count > 0 else _nbr_created.json.id)}) }}

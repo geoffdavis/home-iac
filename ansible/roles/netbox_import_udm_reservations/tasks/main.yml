@@ -1,0 +1,140 @@
+---
+# netbox_import_udm_reservations: UDM -> NetBox backfill of DHCP
+# reservations and DHCP pools.
+#
+#   1. Read the UDM's known clients and networks, and NetBox's addresses,
+#      MACs, devices, prefixes and IP ranges.
+#   2. Plan with the udm_reservation_backfill_plan / udm_dhcp_range_plan
+#      filters (filter_plugins/netbox_reservations.py, unit-tested).
+#   3. Execute the plan (apply_one.yml). Under --check only the plan is
+#      printed.
+#
+# Never deletes or reassigns anything in NetBox; conflicts are printed for
+# a human. Safe to re-run: a second run plans nothing.
+
+- name: "Fetch NetBox token and UDM credentials from 1Password"
+  ansible.builtin.set_fact:
+    _nbr_token: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_reservations_netbox_token_op_item,
+                vault=netbox_import_udm_reservations_netbox_token_op_vault,
+                field=netbox_import_udm_reservations_netbox_token_op_field) }}
+    _nbr_udm_username: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_reservations_udm_creds_op_item,
+                vault=netbox_import_udm_reservations_udm_creds_op_vault,
+                field='username') }}
+    _nbr_udm_password: >-
+      {{ lookup('community.general.onepassword',
+                netbox_import_udm_reservations_udm_creds_op_item,
+                vault=netbox_import_udm_reservations_udm_creds_op_vault,
+                field='password') }}
+  no_log: true
+
+- name: "Authenticate against the UDM controller"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_udm_controller_url }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ _nbr_udm_username }}"
+      password: "{{ _nbr_udm_password }}"
+    validate_certs: "{{ netbox_import_udm_reservations_udm_validate_certs }}"
+    status_code: 200
+  register: _nbr_login
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+- name: "GET UDM known clients and networks"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_udm_controller_url }}/proxy/network/api/s/{{ netbox_import_udm_reservations_udm_site }}/rest/{{ item }}"
+    headers:
+      Cookie: "{{ _nbr_login.cookies_string }}"
+      X-CSRF-Token: "{{ _nbr_login.x_csrf_token | default('') }}"
+    validate_certs: "{{ netbox_import_udm_reservations_udm_validate_certs }}"
+    return_content: true
+  loop: [user, networkconf]
+  register: _nbr_udm
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+- name: "GET NetBox objects"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/{{ item }}/?limit={{ netbox_import_udm_reservations_page_limit }}"
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+      Accept: application/json
+    return_content: true
+  loop:
+    - ipam/ip-addresses
+    - dcim/mac-addresses
+    - dcim/devices
+    - ipam/prefixes
+    - ipam/ip-ranges
+  register: _nbr_nb
+  no_log: true
+  check_mode: false
+  changed_when: false
+
+- name: "Refuse to plan from a partial NetBox list"
+  ansible.builtin.assert:
+    that: "_nbr_nb.results | map(attribute='json.next') | select | list | length == 0"
+    fail_msg: "A NetBox list has more than {{ netbox_import_udm_reservations_page_limit }} objects; raise netbox_import_udm_reservations_page_limit."
+
+- name: "Plan the backfill"
+  ansible.builtin.set_fact:
+    _nbr_plan: >-
+      {{ _nbr_udm.results[0].json.data
+         | udm_reservation_backfill_plan(_nbr_nb.results[0].json.results,
+                                         _nbr_nb.results[1].json.results,
+                                         _nbr_nb.results[2].json.results,
+                                         _nbr_nb.results[3].json.results) }}
+    _nbr_ranges: >-
+      {{ _nbr_udm.results[1].json.data
+         | udm_dhcp_range_plan(_nbr_nb.results[3].json.results,
+                               _nbr_nb.results[4].json.results) }}
+
+- name: "Show the plan"
+  ansible.builtin.debug:
+    msg:
+      already_in_sync: "{{ _nbr_plan.in_sync | length }}"
+      actions: "{{ _nbr_plan.actions | map(attribute='kind') | zip(_nbr_plan.actions | map(attribute='ip'), _nbr_plan.actions | map(attribute='name')) | map('join', ' ') | list }}"
+      dhcp_ranges_to_create: "{{ _nbr_ranges | map(attribute='network') | list }}"
+
+- name: "Show conflicts (left alone; fix by hand in NetBox)"
+  ansible.builtin.debug:
+    msg: "{{ item.ip }} {{ item.mac }} ({{ item.name }}): {{ item.reason }}"
+  loop: "{{ _nbr_plan.conflicts }}"
+  loop_control:
+    label: "{{ item.ip }}"
+
+- name: "Ensure shared NetBox objects exist (tag, device role, device type)"
+  ansible.builtin.include_tasks: ensure_shared.yml
+  when:
+    - not ansible_check_mode
+    - (_nbr_plan.actions | length > 0) or (_nbr_ranges | length > 0)
+
+- name: "Apply each planned action"
+  ansible.builtin.include_tasks: apply_one.yml
+  loop: "{{ _nbr_plan.actions }}"
+  loop_control:
+    loop_var: _nbr_action
+    label: "{{ _nbr_action.kind }} {{ _nbr_action.ip }} {{ _nbr_action.name }}"
+  when: not ansible_check_mode
+
+- name: "Create IP ranges for UniFi DHCP pools"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/ipam/ip-ranges/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    body_format: json
+    body: "{{ item.body }}"
+    status_code: 201
+  loop: "{{ _nbr_ranges }}"
+  loop_control:
+    label: "{{ item.network }}"
+  changed_when: true
+  when: not ansible_check_mode
