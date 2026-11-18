@@ -86,7 +86,7 @@ diagnosing turns into a prompt storm for the operator.
   state when something actually re-runs it.
 - Runs on `[self-hosted, nix, x86_64-linux, nas-sdg]`, not the generic
   self-hosted pool — this job needs LAN reachability to the UDM/FreeIPA
-  replicas and to nas-sdg's 1Password Connect server (`172.29.10.20:8081`),
+  replicas and to nas-sdg's 1Password Connect server (`https://op-connect.mgmt.home.geoffdavis.com`),
   none of which the `nas-sct`/`nas-cin` runner spokes have. Both the runner
   and the Connect server are provisioned in the separate `nix-personal`
   repo (`hosts/nas-sdg/default.nix`'s `my.ghRunners.repos`,
