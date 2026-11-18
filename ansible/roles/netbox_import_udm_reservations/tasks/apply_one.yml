@@ -1,0 +1,108 @@
+---
+# apply_one.yml: execute one planned action (_nbr_action). Kinds are
+# documented in filter_plugins/netbox_reservations.py.
+
+- name: "PATCH address {{ _nbr_action.ip }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/ipam/ip-addresses/{{ _nbr_action.ip_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    body_format: json
+    body: "{{ _nbr_action.body }}"
+  changed_when: true
+  when: _nbr_action.kind == 'patch_ip'
+
+- name: "POST address {{ _nbr_action.ip }} on its existing interface"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/ipam/ip-addresses/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    body_format: json
+    body: "{{ _nbr_action.body }}"
+    status_code: 201
+  changed_when: true
+  when: _nbr_action.kind == 'create_ip'
+
+- name: "Create device, interface, MAC and address for {{ _nbr_action.name }}"
+  when: _nbr_action.kind == 'create_device'
+  block:
+    - name: "POST device {{ _nbr_action.device_name }}"
+      ansible.builtin.uri:
+        url: "{{ netbox_import_udm_reservations_netbox_url }}/api/dcim/devices/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _nbr_token }}"
+        body_format: json
+        body:
+          name: "{{ _nbr_action.device_name }}"
+          site: "{{ _nbr_ids.site }}"
+          role: "{{ _nbr_ids.role }}"
+          device_type: "{{ _nbr_ids.device_type }}"
+          status: active
+          tags: [{slug: unifi-managed}]
+          description: "Backfilled from a UniFi DHCP reservation; reclassify freely"
+        status_code: 201
+        return_content: true
+      register: _nbr_dev
+      changed_when: true
+
+    - name: "POST interface on {{ _nbr_action.device_name }}"
+      ansible.builtin.uri:
+        url: "{{ netbox_import_udm_reservations_netbox_url }}/api/dcim/interfaces/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _nbr_token }}"
+        body_format: json
+        body:
+          device: "{{ _nbr_dev.json.id }}"
+          name: "{{ netbox_import_udm_reservations_interface_name }}"
+          type: other
+        status_code: 201
+        return_content: true
+      register: _nbr_if
+      changed_when: true
+
+    - name: "POST MAC {{ _nbr_action.mac }}"
+      ansible.builtin.uri:
+        url: "{{ netbox_import_udm_reservations_netbox_url }}/api/dcim/mac-addresses/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _nbr_token }}"
+        body_format: json
+        body:
+          mac_address: "{{ _nbr_action.mac }}"
+          assigned_object_type: dcim.interface
+          assigned_object_id: "{{ _nbr_if.json.id }}"
+        status_code: 201
+        return_content: true
+      register: _nbr_mac
+      changed_when: true
+
+    - name: "Set the interface's primary MAC"
+      ansible.builtin.uri:
+        url: "{{ netbox_import_udm_reservations_netbox_url }}/api/dcim/interfaces/{{ _nbr_if.json.id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ _nbr_token }}"
+        body_format: json
+        body:
+          primary_mac_address: "{{ _nbr_mac.json.id }}"
+      changed_when: true
+
+    - name: "Create or attach address {{ _nbr_action.address }}"
+      ansible.builtin.uri:
+        url: >-
+          {{ netbox_import_udm_reservations_netbox_url }}/api/ipam/ip-addresses/{{
+             (_nbr_action.existing_ip_id ~ '/') if _nbr_action.existing_ip_id else '' }}
+        method: "{{ 'PATCH' if _nbr_action.existing_ip_id else 'POST' }}"
+        headers:
+          Authorization: "Bearer {{ _nbr_token }}"
+        body_format: json
+        body: >-
+          {{ _nbr_action.ip_body | combine({'assigned_object_type': 'dcim.interface',
+                                            'assigned_object_id': _nbr_if.json.id,
+                                            'status': 'dhcp'}) }}
+        status_code: [200, 201]
+      changed_when: true

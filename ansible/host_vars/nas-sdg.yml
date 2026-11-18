@@ -36,6 +36,15 @@ unifi_network_port_forward_rules:
     fwd: "172.29.50.20"
     fwd_port: "51820"
 
+# --- unifi_network_ip_reservation: NetBox -> UDM DHCP reservations -------
+# NetBox is the source of truth for fixed IPs: every NetBox status=dhcp
+# address tagged unifi-managed is pushed to the UDM as a reservation (by
+# MAC, from the address's interface). Enabled 2026-11-18 after
+# netbox_import_udm_reservations backfilled NetBox from the UDM. Add a new
+# reservation in NetBox (below .100 -- the DHCP pools start there), not in
+# the UniFi UI. The role never removes a reservation.
+unifi_network_ip_reservation_enabled: true
+
 # --- unifi_network_dns_record: UDM static DNS records -------------------
 # Stable service aliases in the UDM-authoritative home.geoffdavis.com zone.
 # syslog: the central syslog endpoint (VictoriaLogs on nas-sdg) for LAN

@@ -37,9 +37,13 @@ netbox_import_udm_state_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
 # commit -- creating it is a manual, one-time step a human has to do
 # before this role can actually run (see README "Before running this
 # role").
-netbox_import_udm_state_netbox_token_op_item: "netbox-udm-import-token"
+# 2026-11-18: was "netbox-udm-import-token", a token of NetBox's local
+# `admin` account, which is deliberately inactive ("User inactive"). Now
+# the `ansible` service account's write-enabled token, the same one
+# netbox_import_udm_dns_records and netbox_import_udm_reservations use.
+netbox_import_udm_state_netbox_token_op_item: "netbox-ansible-service-account"
 netbox_import_udm_state_netbox_token_op_vault: "nas-overlay"
-netbox_import_udm_state_netbox_token_op_field: "token"
+netbox_import_udm_state_netbox_token_op_field: "credential"
 
 # --- UDM connection ------------------------------------------------------
 # Identical to unifi_network_dns_record's defaults -- same controller, same

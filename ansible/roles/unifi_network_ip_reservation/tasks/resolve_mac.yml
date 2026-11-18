@@ -40,7 +40,7 @@
     url: "{{ unifi_network_ip_reservation_netbox_url }}/api/dcim/interfaces/{{ _udm_res_mac_id }}/"
     method: GET
     headers:
-      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Authorization: "Bearer {{ _udm_res_netbox_token }}"
       Accept: "application/json"
     validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
     status_code: 200
@@ -58,7 +58,7 @@
     url: "{{ unifi_network_ip_reservation_netbox_url }}/api/virtualization/interfaces/{{ _udm_res_mac_id }}/"
     method: GET
     headers:
-      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Authorization: "Bearer {{ _udm_res_netbox_token }}"
       Accept: "application/json"
     validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
     status_code: 200

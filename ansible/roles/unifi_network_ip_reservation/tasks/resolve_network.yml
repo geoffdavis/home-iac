@@ -15,7 +15,7 @@
     url: "{{ unifi_network_ip_reservation_netbox_url }}/api/ipam/prefixes/?contains={{ _udm_res_draft.ip }}"
     method: GET
     headers:
-      Authorization: "Token {{ _udm_res_netbox_token }}"
+      Authorization: "Bearer {{ _udm_res_netbox_token }}"
       Accept: "application/json"
     validate_certs: "{{ unifi_network_ip_reservation_netbox_validate_certs }}"
     status_code: 200
@@ -28,13 +28,15 @@
   changed_when: false
 
 # `contains` can return multiple ancestor prefixes (e.g. a /16 supernet
-# and its /24) — the most specific (longest mask) is the one whose VLAN
-# actually applies to this address.
+# and its /24) — the most specific is the one whose VLAN actually applies
+# to this address. NetBox 4.6 returns no `prefix_length`; `_depth` (0 at
+# the top of the prefix tree, +1 per nesting level) is the field that
+# orders ancestors, so the deepest prefix is the most specific.
 - name: "Pick the most specific containing prefix — {{ _udm_res_draft.ip }}"
   ansible.builtin.set_fact:
     _udm_res_prefix: >-
       {{ (_udm_res_prefix_lookup.json.results
-          | sort(attribute='prefix_length', reverse=true)
+          | sort(attribute='_depth', reverse=true)
           | first)
          if (_udm_res_prefix_lookup.json.results | length > 0) else {} }}
 
