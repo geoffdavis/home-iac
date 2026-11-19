@@ -1,0 +1,48 @@
+#!/bin/sh
+# {{ jetkvm_freeze_catcher_dir }}/supervise.sh
+#
+# MANAGED BY ANSIBLE — home-iac, roles/jetkvm_freeze_catcher.
+#
+# Restart catcher.sh whenever it exits, and say so in the log.
+#
+# WHY THIS EXISTS. On 2026-09-11 the hand-made catcher logged "catcher
+# started" at 18:13:43, the target froze at 18:14:31 with the catcher armed,
+# and the process was simply GONE by 18:17:30 — nothing else in the log. The
+# probe, the loop, the arming, the launcher and the pidfile were all
+# subsequently proven correct on the device, so the only state consistent
+# with a completely empty log across an armed 2-minute freeze was that the
+# process was no longer running.
+#
+# A resident watcher with no supervision has a failure mode that is both
+# silent and total: it stops, and the next freeze goes uncaptured with no
+# evidence that anything was ever wrong. crond is not running on these
+# devices and /etc is reflashed by every firmware update, so the supervisor
+# lives here in /userdata alongside the payload and is started by the same
+# init script.
+#
+# Deliberately trivial: it runs no probes, opens no sockets and parses
+# nothing, so there is very little here that can itself fail.
+
+set -u
+
+CATCHER={{ jetkvm_freeze_catcher_dir }}/catcher.sh
+LOG={{ jetkvm_freeze_catcher_dir }}/catcher.log
+RESTART_DELAY={{ jetkvm_freeze_catcher_restart_delay }}
+
+log() {
+  echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >>"$LOG" 2>/dev/null
+}
+
+log "supervisor started (pid $$), launching $CATCHER"
+
+while true; do
+  if [ ! -x "$CATCHER" ]; then
+    log "SUPERVISOR: $CATCHER is missing or not executable — retrying in ${RESTART_DELAY}s"
+    sleep "$RESTART_DELAY"
+    continue
+  fi
+  "$CATCHER"
+  _rc=$?
+  log "SUPERVISOR: catcher exited rc=$_rc — restarting in ${RESTART_DELAY}s"
+  sleep "$RESTART_DELAY"
+done

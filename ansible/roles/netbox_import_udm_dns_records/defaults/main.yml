@@ -9,12 +9,10 @@
 # second backfill role" section.
 
 # --- NetBox connection -------------------------------------------------
-# Same host + Host-header rationale as netbox_import_udm_state's defaults
-# (ansible/roles/netbox_import_udm_state/defaults/main.yml) -- reached over
-# VLAN 10 by IP, with an explicit Host header, because netbox.nix's
-# ALLOWED_HOSTS only recognizes "netbox.mgmt.home.geoffdavis.com 127.0.0.1"
-# and 400s a bare-IP Host header.
-netbox_import_udm_dns_records_netbox_url: "http://172.29.10.20:8080"
+# Same host + rationale as netbox_import_udm_state's defaults
+# (ansible/roles/netbox_import_udm_state/defaults/main.yml): by name over
+# TLS. The Host header now just repeats the URL's host.
+netbox_import_udm_dns_records_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
 netbox_import_udm_dns_records_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
 
 # --- netbox-dns Zone/View this backfill writes into ---------------------

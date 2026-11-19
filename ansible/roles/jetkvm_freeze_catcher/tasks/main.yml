@@ -1,0 +1,330 @@
+---
+# tasks/main.yml — jetkvm_freeze_catcher
+#
+# Device constraints that shape every task here (see group_vars/oob_kvm.yml
+# and the vault's "Provision a JetKVM OOB Console"):
+#   - no python        -> `raw` only on-device; the play sets gather_facts: false
+#   - no sftp-server   -> no copy/template/script on-device; transfer is
+#                         cat-over-ssh from the control node
+#   - busybox, not GNU -> no `stat`, no `jq`; `sha256sum` and `ls -l` do exist
+#
+# --check: ansible.builtin.raw declares `check_mode: support: none`, and
+# Ansible SKIPS such tasks under --check rather than simulating them. The
+# read-only raw task below therefore carries `check_mode: false` so it runs
+# for real — that is what makes --check report genuine drift against the real
+# console instead of nothing at all. Both write halves are guarded on
+# `not ansible_check_mode`.
+
+# ── control-node validation: nothing reaches a console until this passes ──
+#
+# This role arms something that HARD-CRASHES a NAS. A typo in an address here
+# does not produce a broken watcher, it produces a watcher pointed at the
+# wrong machine, so these are hard errors rather than warnings.
+- name: Validate the freeze-catcher configuration
+  delegate_to: localhost
+  when: jetkvm_freeze_catcher_enabled | bool
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - jetkvm_freeze_catcher_target | length > 0
+      - jetkvm_freeze_catcher_witness | length > 0
+      - jetkvm_freeze_catcher_target != jetkvm_freeze_catcher_witness
+      # LAN literal, never a hostname: netbird names do not resolve on these
+      # devices at all (NXDOMAIN on jetkvm-sct-01, timeout on jetkvm-sdg-02,
+      # both measured 2026-09-11), and a target that silently fails to
+      # resolve is a catcher that can never arm.
+      - jetkvm_freeze_catcher_target is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - jetkvm_freeze_catcher_witness is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - jetkvm_freeze_catcher_consecutive_fails | int >= 2
+    fail_msg: >-
+      {{ inventory_hostname }} enables the freeze catcher but its
+      configuration is not usable: target "{{ jetkvm_freeze_catcher_target }}"
+      and witness "{{ jetkvm_freeze_catcher_witness }}" must both be set, must
+      differ, and must be LAN IPv4 LITERALS (not netbird/DNS names — those do
+      not resolve on a JetKVM). consecutive_fails must be >= 2.
+
+# ── read the console's current state ─────────────────────────────────────
+- name: Read the installed freeze-catcher state
+  check_mode: false
+  ansible.builtin.raw: |
+    for f in {{ jetkvm_freeze_catcher_dir }}/catcher.sh \
+             {{ jetkvm_freeze_catcher_dir }}/supervise.sh \
+             /etc/init.d/{{ jetkvm_freeze_catcher_init_name }}; do
+      if [ -f "$f" ]; then
+        echo "SUM $f $(sha256sum "$f" | cut -d' ' -f1)"
+      else
+        echo "SUM $f absent"
+      fi
+    done
+    n=0
+    self=$$
+    for d in /proc/[0-9]*; do
+      pid=${d#/proc/}
+      [ "$pid" = "$self" ] && continue
+      c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+      # Skip inline-script shells. The argv of THIS task contains the daemon
+      # paths, because they are written literally in the script text above,
+      # so without this guard the loop matches itself. In the detect task
+      # that made RUNNING never reach 0; in the disarm task it sent kill -9
+      # to the ansible session before echo disarmed, surfacing as UNREACHABLE
+      # with a closed shared connection, leaving the console still armed.
+      # The daemons are exec-ed as sh PATH; an inline script is sh -c TEXT.
+      case "$c" in *" -c "*) continue ;; esac
+      case "$c" in
+        *{{ jetkvm_freeze_catcher_dir }}/supervise.sh*) n=$((n+1)) ;;
+      esac
+    done
+    echo "RUNNING $n"
+  register: _fc_state
+  changed_when: false
+
+- name: Note whether a catcher is currently running
+  ansible.builtin.set_fact:
+    _fc_running: >-
+      {{ (_fc_state.stdout | regex_search('RUNNING (\d+)', '\1')
+          | first | default('0') | int) > 0 }}
+    _fc_init_present: >-
+      {{ _fc_state.stdout is search('SUM /etc/init.d/'
+         + jetkvm_freeze_catcher_init_name + ' [0-9a-f]{8}') }}
+
+# ── disabled consoles: actively DISARM, do not merely skip ───────────────
+#
+# "Not enabled" has to mean "definitely not armed", not "we didn't look". A
+# console that was armed once and then turned off in host_vars must lose its
+# catcher on the next run, and a firmware reflash must not be able to
+# resurrect one.
+- name: Report that this console is not enabled for the freeze catcher
+  when: not (jetkvm_freeze_catcher_enabled | bool)
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: freeze catcher NOT enabled —
+      {{ 'a catcher IS running and will be removed'
+         if (_fc_running | bool or _fc_init_present | bool)
+         else 'nothing installed, nothing to do' }}.
+
+- name: Ensure no catcher is armed on a console that is not enabled
+  when:
+    - not (jetkvm_freeze_catcher_enabled | bool)
+    - not ansible_check_mode
+    - _fc_running | bool or _fc_init_present | bool
+  ansible.builtin.raw: |
+    if [ -x /etc/init.d/{{ jetkvm_freeze_catcher_init_name }} ]; then
+      /etc/init.d/{{ jetkvm_freeze_catcher_init_name }} stop >/dev/null 2>&1
+    fi
+    rm -f /etc/init.d/{{ jetkvm_freeze_catcher_init_name }}
+    self=$$
+    for d in /proc/[0-9]*; do
+      pid=${d#/proc/}
+      [ "$pid" = "$self" ] && continue
+      c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+      # Skip inline-script shells. The argv of THIS task contains the daemon
+      # paths, because they are written literally in the script text above,
+      # so without this guard the loop matches itself. In the detect task
+      # that made RUNNING never reach 0; in the disarm task it sent kill -9
+      # to the ansible session before echo disarmed, surfacing as UNREACHABLE
+      # with a closed shared connection, leaving the console still armed.
+      # The daemons are exec-ed as sh PATH; an inline script is sh -c TEXT.
+      case "$c" in *" -c "*) continue ;; esac
+      case "$c" in
+        *{{ jetkvm_freeze_catcher_dir }}/supervise.sh*) kill -9 "$pid" 2>/dev/null ;;
+        *{{ jetkvm_freeze_catcher_dir }}/catcher.sh*) kill -9 "$pid" 2>/dev/null ;;
+      esac
+    done
+    rm -f {{ jetkvm_freeze_catcher_pidfile }}
+    echo disarmed
+  register: _fc_disarm
+  changed_when: "'disarmed' in _fc_disarm.stdout"
+
+# ── enabled consoles: render, push, install, start, verify ───────────────
+- name: Install and arm the freeze catcher
+  when: jetkvm_freeze_catcher_enabled | bool
+  block:
+    # check_mode: false on the whole control-node half (staging dir, render,
+    # checksum). None of it touches a console, and running it for real is
+    # what lets --check report GENUINE drift — which files differ from the
+    # device's copies — instead of skipping the render and then failing on an
+    # undefined staging path. Only the device-writing block below is guarded
+    # on `not ansible_check_mode`.
+    - name: Create a control-node staging dir
+      check_mode: false
+      delegate_to: localhost
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: jetkvm-freeze-catcher
+      register: _fc_stage
+      changed_when: false
+
+    # `validate: sh -n` so a shell syntax error is caught on the CONTROL NODE
+    # and the template is never written, let alone shipped. A half-valid
+    # catcher.sh on a remote console is a watcher that exits on its first
+    # parse and captures nothing. The control node's /bin/sh is not busybox
+    # ash, so this catches gross syntax errors rather than every ash-ism —
+    # which is precisely the class of mistake worth failing the run for.
+    - name: Render the catcher payload, its supervisor and the init script
+      check_mode: false
+      delegate_to: localhost
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ _fc_stage.path }}/{{ item.name }}"
+        mode: "0755"
+        validate: sh -n %s
+      loop: "{{ _fc_files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+    - name: Checksum the rendered files on the control node
+      check_mode: false
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ _fc_stage.path }}/{{ item.name }}"
+        checksum_algorithm: sha256
+      loop: "{{ _fc_files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _fc_local
+
+    # Read the rendered bytes back off disk as base64, for transport. slurp
+    # rather than lookup('file'): lookup strips trailing newlines, which
+    # would make the bytes we ship differ from the bytes we checksummed and
+    # fail the on-device verify every single run.
+    - name: Read the rendered files back as base64 for transport
+      check_mode: false
+      delegate_to: localhost
+      ansible.builtin.slurp:
+        src: "{{ _fc_stage.path }}/{{ item.name }}"
+      loop: "{{ _fc_files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _fc_blobs
+
+    # Compare rendered content against what the device actually holds, so a
+    # second run is genuinely changed=0 rather than re-pushing identical
+    # bytes every time.
+    #
+    # _fc_blobs and _fc_local are both looped over _fc_files in the same
+    # order, so index_var lines them up.
+    - name: Work out which files actually differ from the console's copies
+      ansible.builtin.set_fact:
+        _fc_push: >-
+          {{ _fc_push | default([]) + (
+               [{'name': item.item.name,
+                 'dest': item.item.dest,
+                 'sum': item.stat.checksum,
+                 'b64': _fc_blobs.results[_fc_idx].content}]
+               if (_fc_state.stdout
+                   | regex_search('SUM ' + (item.item.dest | regex_escape) + ' (\S+)', '\1')
+                   | first | default('absent')) != item.stat.checksum
+               else []
+             ) }}
+      loop: "{{ _fc_local.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+        index_var: _fc_idx
+
+    - name: Report what will change
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ (_fc_push | default([]) | map(attribute='dest') | list)
+             or 'all files already in sync' }};
+          catcher currently {{ 'RUNNING' if _fc_running | bool else 'NOT running' }}.
+
+    - name: Apply the freeze catcher
+      when: not ansible_check_mode
+      block:
+        - name: Ensure the payload directory exists
+          ansible.builtin.raw: "mkdir -p {{ jetkvm_freeze_catcher_dir }} && echo ok"
+          changed_when: false
+
+        # Transfer is chunked base64 over Ansible's OWN connection,
+        # deliberately NOT the `delegate_to: localhost` + plain-`ssh` pattern
+        # that jetkvm-netbird-update.yml and jetkvm_macros use.
+        #
+        # There is still no sftp-server, so copy/template remain impossible
+        # on-device. But a second, plain `ssh` invocation bypasses the
+        # connection plugin — so it needs ansible_ssh_common_args and
+        # ansible_ssh_private_key_file restated by hand, and it opens a FRESH
+        # connection that has to re-authenticate. That is not theoretical:
+        # this role's first live attempt died exactly there with
+        # "sign_and_send_pubkey: signing failed ... communication with agent
+        # failed" when the 1Password SSH agent locked, while Ansible's own
+        # multiplexed connection (ControlMaster/ControlPersist, ansible.cfg)
+        # kept working throughout. Agent flakiness is precisely the failure
+        # class this catcher exists to escape, so it has no business in the
+        # deployment path either.
+        #
+        # base64 because the payload is a shell script full of quotes and
+        # backslashes: base64's alphabet is shell-safe, so the content cannot
+        # break out of the raw command. busybox here has `base64` (verified in
+        # `busybox --list`); it does not have `stat`.
+        #
+        # See push_one.yml for why it is chunked rather than sent in one
+        # command — the short version is that dropbear caps exec-request
+        # length and a 13.4 KB catcher.sh killed the connection.
+        - name: Push each changed file to the console
+          ansible.builtin.include_tasks: push_one.yml
+          loop: "{{ _fc_push | default([]) }}"
+          loop_control:
+            loop_var: _fc_file
+            label: "{{ _fc_file.dest }}"
+
+        # Restart only when something actually changed or nothing is running
+        # — otherwise a re-run would bounce a healthy catcher (and blind it
+        # for the duration) purely in order to report "changed".
+        - name: (Re)start the catcher
+          when: (_fc_push | default([]) | length > 0) or not (_fc_running | bool)
+          ansible.builtin.raw: |
+            /etc/init.d/{{ jetkvm_freeze_catcher_init_name }} restart
+          register: _fc_restart
+          changed_when: true
+          failed_when: "'OK' not in _fc_restart.stdout"
+
+        # Proving a PROCESS exists is not proving a CATCHER works. The
+        # startup self-test writes an all-zeros HID report (a genuine no-op —
+        # "no keys pressed") and logs the result, so this can assert that the
+        # capture path itself is functional. That distinction is the whole
+        # point of this role: the failure being fixed here is a catcher that
+        # looked armed and could not fire.
+        - name: Wait for the catcher to report its startup self-test
+          ansible.builtin.raw: |
+            tail -n 25 {{ jetkvm_freeze_catcher_dir }}/catcher.log 2>/dev/null || echo nolog
+          register: _fc_log
+          changed_when: false
+          retries: 6
+          delay: 5
+          until: _fc_log.stdout is search('SELFTEST (OK|SKIPPED|FAILED)')
+
+        - name: Confirm the catcher is running
+          ansible.builtin.raw: |
+            /etc/init.d/{{ jetkvm_freeze_catcher_init_name }} status
+          register: _fc_status
+          changed_when: false
+          failed_when: "'running' not in _fc_status.stdout"
+
+        - name: Confirm the console can actually reach its HID gadget
+          ansible.builtin.assert:
+            quiet: true
+            that: _fc_log.stdout is not search('SELFTEST FAILED')
+            fail_msg: >-
+              {{ inventory_hostname }}: the catcher started but its HID
+              self-test FAILED, so it cannot send SysRq and would silently
+              miss every freeze. Check {{ jetkvm_freeze_catcher_hid }} on the
+              console (USB data cable seated? gadget bound?) — see
+              {{ jetkvm_freeze_catcher_dir }}/catcher.log.
+            success_msg: >-
+              {{ inventory_hostname }}: freeze catcher armed against
+              {{ jetkvm_freeze_catcher_target }} (witness
+              {{ jetkvm_freeze_catcher_witness }}){{
+                 ', DRY RUN — it will detect and log but never send SysRq'
+                 if jetkvm_freeze_catcher_dry_run | bool else '' }}.
+
+  always:
+    - name: Remove the control-node staging dir
+      check_mode: false
+      when: _fc_stage.path is defined
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ _fc_stage.path }}"
+        state: absent
+      changed_when: false

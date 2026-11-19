@@ -1,0 +1,41 @@
+---
+# netbox_import_udm_reservations: one-shot (re-runnable) backfill of the
+# UDM's DHCP reservations and DHCP pools into NetBox, so the ongoing
+# NetBox -> UDM sync (unifi_network_ip_reservation) starts from a NetBox
+# that already matches the UDM. See this role's README.
+
+netbox_import_udm_reservations_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
+
+# Write-enabled v2 token of the `ansible` NetBox service account (the same
+# account netbox_import_udm_dns_records uses). Its ObjectPermission
+# `ansible-ipam-reservation-sync` allows view/add/change, never delete, on
+# the IPAM/DCIM objects this role touches.
+netbox_import_udm_reservations_netbox_token_op_item: "netbox-ansible-service-account"
+netbox_import_udm_reservations_netbox_token_op_vault: "nas-overlay"
+netbox_import_udm_reservations_netbox_token_op_field: "credential"
+
+netbox_import_udm_reservations_udm_controller_url: "https://172.29.50.1"
+netbox_import_udm_reservations_udm_validate_certs: false
+netbox_import_udm_reservations_udm_site: "default"
+netbox_import_udm_reservations_udm_creds_op_item: "UniFi UDM Pro (ansible)"
+netbox_import_udm_reservations_udm_creds_op_vault: "Automation"
+
+# Where devices created for otherwise-unknown reservations go. Reclassify
+# them in NetBox afterwards (role, device type) as you like; the sync only
+# cares about the interface MAC and the address.
+netbox_import_udm_reservations_site_name: "San Diego (Home)"
+netbox_import_udm_reservations_device_role:
+  name: "UniFi Client"
+  slug: "unifi-client"
+  color: "9e9e9e"
+netbox_import_udm_reservations_manufacturer:
+  name: "Generic"
+  slug: "generic"
+netbox_import_udm_reservations_device_type:
+  model: "Unclassified network client"
+  slug: "unclassified-network-client"
+netbox_import_udm_reservations_interface_name: "nic0"
+
+# Largest NetBox list this role will read in one page; it fails rather
+# than silently working from a partial list.
+netbox_import_udm_reservations_page_limit: 1000

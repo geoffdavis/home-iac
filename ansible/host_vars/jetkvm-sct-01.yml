@@ -1,0 +1,34 @@
+---
+# host_vars/jetkvm-sct-01.yml
+#
+# The Scottsdale OOB console, wired to nas-sct.
+#
+# ── FREEZE CATCHER: ADDRESSING RECORDED, CATCHER NOT ARMED ────────────────
+#
+# nas-sct is NOT freezing, so this console deliberately does NOT enable the
+# catcher — `jetkvm_freeze_catcher_enabled` stays at its role default of
+# false, which means the play actively keeps this console disarmed rather
+# than merely skipping it.
+#
+# The addresses below are recorded anyway, verified on-device 2026-09-11, so
+# that arming this console later is a one-line change and nobody has to
+# rediscover them mid-incident. They are NOT guesses: measured from
+# jetkvm-sct-01 itself.
+#
+#   this console   172.29.41.102/24  (same /24 as its NAS, unlike sdg)
+#   nas-sct        172.29.41.150     tcp/22 -> "SSH-2.0-Open", 0s
+#   gateway        172.29.41.1       tcp/22 -> "SSH-2.0-Open", 0s
+#                                    (also this console's default route)
+#   nas-sct.netbird.cloud -> NXDOMAIN from here, which is why the probe uses
+#                            LAN literals and never the overlay name.
+#
+# The witness is the shared segment's gateway: always up, different hardware
+# from the target, and on the path the probe already uses.
+#
+# To arm this console, add `jetkvm_freeze_catcher_enabled: true` — and read
+# the role README first, because Alt+SysRq+C hard-crashes nas-sct. Commission
+# it with `jetkvm_freeze_catcher_dry_run: true` to prove detection before
+# letting it crash anything.
+jetkvm_freeze_catcher_target: 172.29.41.150
+jetkvm_freeze_catcher_target_name: nas-sct
+jetkvm_freeze_catcher_witness: 172.29.41.1

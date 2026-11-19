@@ -1,0 +1,111 @@
+#!/bin/sh
+# /etc/init.d/{{ jetkvm_freeze_catcher_init_name }}
+#
+# MANAGED BY ANSIBLE — home-iac, roles/jetkvm_freeze_catcher.
+#
+# Thin launcher only. The payload lives in {{ jetkvm_freeze_catcher_dir }}, which
+# PERSISTS across firmware updates; THIS file sits on / and does NOT — a
+# firmware update reflashes the rootfs and takes it with it. That is the same
+# split S50netbird uses (its binary is /userdata/netbird/netbird), and it has
+# the same consequence: after a firmware update this file must be
+# reinstalled, which is ansible's job, not something to rely on surviving.
+#
+# S60 so it runs after S50netbird and the device has settled — though the
+# catcher needs no overlay at all: it probes its target across the LAN and
+# writes to the LOCAL USB HID gadget.
+#
+# What it starts is supervise.sh, NOT catcher.sh directly. See supervise.sh
+# for why: the one confirmed failure of the hand-made version was the catcher
+# process silently ceasing to exist.
+
+DAEMON={{ jetkvm_freeze_catcher_dir }}/supervise.sh
+CATCHER={{ jetkvm_freeze_catcher_dir }}/catcher.sh
+PIDFILE={{ jetkvm_freeze_catcher_pidfile }}
+LOG={{ jetkvm_freeze_catcher_dir }}/catcher.log
+
+# Echo the supervisor's pid if it is genuinely running, else return 1.
+#
+# Checks /proc/<pid>/cmdline rather than trusting `kill -0`: a bare kill -0
+# only proves SOME process holds that pid. Pids get recycled, and a stale
+# pidfile that happens to name a live stranger would make `status` lie and
+# would make `stop` kill an innocent process.
+running_pid() {
+  [ -f "$PIDFILE" ] || return 1
+  _p=$(cat "$PIDFILE" 2>/dev/null)
+  case "$_p" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ -d "/proc/$_p" ] || return 1
+  tr '\0' ' ' <"/proc/$_p/cmdline" 2>/dev/null | grep -q "supervise.sh" || return 1
+  echo "$_p"
+  return 0
+}
+
+start() {
+  if [ ! -x "$DAEMON" ]; then
+    echo "freeze-catcher: $DAEMON missing or not executable"
+    exit 1
+  fi
+  if _p=$(running_pid); then
+    echo "freeze-catcher: already running (pid $_p)"
+    return 0
+  fi
+  # A stale pidfile naming a dead or unrelated process must not block a
+  # restart — clear it rather than refusing to start.
+  rm -f "$PIDFILE"
+  printf 'Starting freeze-catcher: '
+  setsid "$DAEMON" >/dev/null 2>&1 &
+  echo $! >"$PIDFILE"
+  # Confirm it actually took, instead of reporting OK for a process that
+  # exited immediately.
+  sleep 1
+  if _p=$(running_pid); then
+    echo "OK (pid $_p)"
+    return 0
+  fi
+  echo "FAILED (did not stay running; see $LOG)"
+  rm -f "$PIDFILE"
+  return 1
+}
+
+stop() {
+  printf 'Stopping freeze-catcher: '
+  if _p=$(running_pid); then
+    # Kill the supervisor first so it cannot resurrect the catcher, then the
+    # catcher itself. Killing them the other way round just makes the
+    # supervisor start a fresh one.
+    kill "$_p" 2>/dev/null
+    sleep 1
+    kill -9 "$_p" 2>/dev/null
+  fi
+  for _d in /proc/[0-9]*; do
+    _c=$(tr '\0' ' ' <"$_d/cmdline" 2>/dev/null)
+    case "$_c" in
+      *"$CATCHER"*) kill -9 "${_d#/proc/}" 2>/dev/null ;;
+    esac
+  done
+  rm -f "$PIDFILE"
+  echo OK
+}
+
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart)
+    stop
+    sleep 1
+    start
+    ;;
+  status)
+    if _p=$(running_pid); then
+      echo "freeze-catcher: running (supervisor pid $_p)"
+      exit 0
+    fi
+    echo "freeze-catcher: not running"
+    exit 1
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac

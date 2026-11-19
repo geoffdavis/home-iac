@@ -38,3 +38,16 @@
   tags: [dns-records]
   roles:
     - netbox_import_udm_dns_records
+
+# 3. netbox_import_udm_reservations -- every UDM DHCP reservation becomes
+#    a NetBox status=dhcp address (tagged unifi-managed) on an interface
+#    carrying its MAC, and each UDM DHCP pool becomes a NetBox IP range.
+#    Prerequisite for unifi_network_ip_reservation (NetBox -> UDM). See
+#    ansible/roles/netbox_import_udm_reservations/README.md.
+- name: "Backfill -- import UDM DHCP reservations and pools into NetBox"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [reservations]
+  roles:
+    - netbox_import_udm_reservations

@@ -1,0 +1,106 @@
+---
+# defaults/main.yml — jetkvm_freeze_catcher
+#
+# See README.md for the whole story. The short version: this role installs a
+# resident watcher on a JetKVM OOB console that sends Magic SysRq from the
+# console's own emulated keyboard when the NAS behind it freezes, so the
+# freeze leaves evidence in efi_pstore instead of vanishing with the
+# watchdog reset.
+#
+# Alt+SysRq+C HARD-CRASHES the target. Everything below is shaped by that.
+
+# ── ENABLEMENT ────────────────────────────────────────────────────────────
+#
+# DEFAULT OFF, EVERYWHERE. The role runs against every console in oob_kvm,
+# but a console only gets an armed catcher if it is switched on explicitly in
+# host_vars. On every console where this stays false the role does NOT merely
+# skip: it actively ensures the init script is gone and no catcher is
+# running, so a box can never keep an armed catcher it is no longer supposed
+# to have (including after a firmware reflash + reinstall).
+#
+# As of 2026-09-11 exactly one console sets this true: jetkvm-sdg-02.
+# nas-sct and nas-cin are not freezing and must not get an armed catcher.
+jetkvm_freeze_catcher_enabled: false
+
+# Detect and log EXACTLY as normal, but never write to the HID gadget. Use
+# this to prove the detection path against a real host without letting it
+# crash anything — it is the safe way to commission a new console.
+jetkvm_freeze_catcher_dry_run: false
+
+# ── ADDRESSING (per host — there is deliberately no fleet default) ─────────
+#
+# THE RULE: each console probes its NAS over the LAN segment they share,
+# never over netbird. Netbird names do not resolve from these devices at all
+# (measured on two of them, see README), the catcher must keep working when
+# the overlay is down, and the LAN is the shortest path during the ~120s
+# before the hardware watchdog fires.
+#
+# These are empty on purpose. A console with no target/witness configured
+# installs nothing, and enabling one without addresses is a hard error rather
+# than a guess — an incorrect target address on a watcher that fires SysRq-C
+# is a way to crash the wrong machine.
+#
+# Confirmed values live in host_vars/<console>.yml:
+#   jetkvm-sdg-02  target 172.29.50.20 (nas-sdg)   witness 172.29.50.1
+#   jetkvm-sct-01  target 172.29.41.150 (nas-sct)  witness 172.29.41.1
+#   jetkvm-cin-01  unknown — that site is offline indefinitely, left unset
+jetkvm_freeze_catcher_target: ""
+jetkvm_freeze_catcher_witness: ""
+
+# Cosmetic only: what the target is called, for log lines and comments.
+jetkvm_freeze_catcher_target_name: "the target"
+
+# Both probes read an SSH banner, so both are tcp/22 in practice. Exposed
+# because "the port sshd listens on" is not the role's decision to hardcode.
+jetkvm_freeze_catcher_target_port: 22
+jetkvm_freeze_catcher_witness_port: 22
+
+# ── DETECTION TUNING ──────────────────────────────────────────────────────
+#
+# The whole capture must complete inside the target's watchdog window (~120s
+# on nas-sdg's IT87). With the defaults below a freeze is confirmed about
+# 45-50 seconds after the first failed probe — measured end-to-end on
+# jetkvm-sdg-02, 2026-09-11: target silenced at 19:10:13, fire branch reached
+# at 19:11:03. That leaves ~70s of margin. Raising CONSECUTIVE_FAILS or the
+# poll intervals eats directly into that margin.
+jetkvm_freeze_catcher_probe_timeout: 6
+jetkvm_freeze_catcher_consecutive_fails: 4
+jetkvm_freeze_catcher_poll_ok: 15
+jetkvm_freeze_catcher_poll_fail: 5
+
+# Seconds between the SysRq-W dump and the SysRq-C panic, so the blocked-task
+# output has landed in the ring buffer before the panic output joins it.
+jetkvm_freeze_catcher_sysrq_gap: 3
+
+# Log a positive "heartbeat" line every N healthy polls. This is what makes
+# a dead or blind catcher visible: the predecessor logged nothing at all
+# while healthy, so silence proved nothing. At poll_ok=15s, every 20 polls is
+# one line per 5 minutes (~290 lines/day).
+jetkvm_freeze_catcher_heartbeat_every: 20
+
+# Seconds the supervisor waits before relaunching a catcher that exited.
+jetkvm_freeze_catcher_restart_delay: 5
+
+# ── PATHS ─────────────────────────────────────────────────────────────────
+#
+# The payload lives in /userdata, which SURVIVES firmware updates. The init
+# script lives on /, which does NOT — every firmware update reflashes the
+# rootfs and deletes it, which is exactly why this role reinstalls it rather
+# than assuming it is there. Same split as S50netbird.
+jetkvm_freeze_catcher_dir: /userdata/freeze-catcher
+jetkvm_freeze_catcher_init_name: S60freeze-catcher
+jetkvm_freeze_catcher_pidfile: /var/run/freeze-catcher.pid
+
+# The USB HID keyboard gadget the console presents to the host it is wired
+# to. Local to the console — no ssh, no agent, no overlay in the capture path.
+jetkvm_freeze_catcher_hid: /dev/hidg0
+
+# Base64 characters per `raw` command when pushing a file to the console.
+# dropbear caps the length of an exec request, and a raw command carries its
+# whole payload on the command line: the first live run sent catcher.sh as a
+# single ~13.4 KB base64 blob and the connection was closed outright
+# (supervise.sh at ~2.4 KB and the init script at ~4.5 KB both went through).
+# 1024 keeps every request small with plenty of headroom.
+jetkvm_freeze_catcher_chunk_chars: 1024
+
+jetkvm_freeze_catcher_log_max_bytes: 262144

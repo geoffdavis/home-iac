@@ -222,7 +222,7 @@ without guessing.
 | `unifi_network_ip_reservation_validate_certs` | `false` | UDM ships self-signed |
 | `unifi_network_ip_reservation_site` | `default` | UniFi site identifier (confirmed live) |
 | `unifi_network_ip_reservation_creds_op_item` / `_op_vault` | UDM item/vault | 1P UDM creds |
-| `unifi_network_ip_reservation_netbox_url` | `http://netbox.mgmt.home.geoffdavis.com:8080` | NetBox base URL (VLAN-10-only reachability, no TLS — see `hosts/nas-sdg/apps/netbox.nix`) |
+| `unifi_network_ip_reservation_netbox_url` | `https://netbox.mgmt.home.geoffdavis.com` | NetBox base URL (VLAN-10-only reachability, TLS via nginx — see `hosts/nas-sdg/apps/netbox.nix`) |
 | `unifi_network_ip_reservation_netbox_creds_op_item` / `_op_vault` / `_token_field` | `nas-sdg netbox` / `nas-overlay` / `api_token` | 1P NetBox token — see Credentials above |
 | `unifi_network_ip_reservation_netbox_tag` | `unifi-managed` | NetBox prefix tag marking "tracked" prefixes; empty string disables the filter |
 | `unifi_network_ip_reservation_netbox_page_limit` / `_max_pages` | `200` / `20` | Pagination bounds |

@@ -75,6 +75,18 @@
       - "desired: {{ _udm_res_desired }}"
 
 # --- not found → POST (see UNVERIFIED note above) ---
+# ansible.builtin.uri does not support check mode: under --check the
+# POST/PUT below are skipped and reported as "ok", so a dry run with real
+# drift used to end in changed=0 (found 2026-11-18: 50 reservations would
+# have been PUT). Report the pending write here instead.
+- name: "Would write (check mode) — {{ _udm_res_reservation.mac }}"
+  ansible.builtin.debug:
+    msg: "{{ 'POST' if (_udm_res_match | length == 0) else 'PUT' }} {{ _udm_res_reservation.ip }} ({{ _udm_res_reservation.mac }})"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - (_udm_res_match | length == 0) or (_udm_res_needs_update | bool)
+
 - name: "POST (create known client + reservation) — {{ _udm_res_reservation.mac }}"
   ansible.builtin.uri:
     url: "{{ unifi_network_ip_reservation_controller_url }}/proxy/network/api/s/{{ unifi_network_ip_reservation_site }}/rest/user"

@@ -1,0 +1,37 @@
+---
+# ensure_shared.yml: the tag, manufacturer, device role and device type
+# that backfilled objects use, plus the site id. Looked up by slug/name,
+# created only when missing.
+
+- name: "Ensure tag, manufacturer and device role exist"
+  ansible.builtin.include_tasks: ensure_by_slug.yml
+  loop:
+    - {endpoint: extras/tags, key: tag, body: {name: unifi-managed, slug: unifi-managed, color: "2196f3",
+                                               description: "Reservation mirrored to the UniFi UDM by unifi_network_ip_reservation"}}
+    - {endpoint: dcim/manufacturers, key: manufacturer, body: "{{ netbox_import_udm_reservations_manufacturer }}"}
+    - {endpoint: dcim/device-roles, key: role, body: "{{ netbox_import_udm_reservations_device_role }}"}
+  loop_control:
+    loop_var: _nbr_shared
+    label: "{{ _nbr_shared.endpoint }} {{ _nbr_shared.body.slug }}"
+
+- name: "Ensure the device type exists"
+  ansible.builtin.include_tasks: ensure_by_slug.yml
+  vars:
+    _nbr_shared:
+      endpoint: dcim/device-types
+      key: device_type
+      body: "{{ netbox_import_udm_reservations_device_type | combine({'manufacturer': _nbr_ids.manufacturer}) }}"
+
+- name: "Look up the site"
+  ansible.builtin.uri:
+    url: "{{ netbox_import_udm_reservations_netbox_url }}/api/dcim/sites/?name={{ netbox_import_udm_reservations_site_name | urlencode }}"
+    headers:
+      Authorization: "Bearer {{ _nbr_token }}"
+    return_content: true
+  register: _nbr_site
+  no_log: true
+
+- name: "Record the site id"
+  ansible.builtin.set_fact:
+    _nbr_ids: "{{ _nbr_ids | combine({'site': _nbr_site.json.results[0].id}) }}"
+  failed_when: _nbr_site.json.count != 1

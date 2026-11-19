@@ -13,16 +13,15 @@
 # takes over writing to the UDM). It never deletes anything from NetBox.
 
 # --- NetBox connection -------------------------------------------------
-# Same host as ../../../hosts/nas-sdg/apps/netbox.nix. Reached over VLAN 10
-# by IP + explicit Host header, NOT the netbox.mgmt.home.geoffdavis.com
-# name -- that UDM static-DNS record exists now (confirmed live
-# 2026-08-24) but this role has no reason to depend on UDM DNS resolving
-# correctly on the machine running ansible-playbook; the IP + Host header
-# is what netbox.nix's own ALLOWED_HOSTS validation actually requires
-# (Django rejects a Host header it doesn't recognize -- ALLOWED_HOSTS is
-# "netbox.mgmt.home.geoffdavis.com 127.0.0.1", so hitting the IP with no
-# Host override 400s).
-netbox_import_udm_state_netbox_url: "http://172.29.10.20:8080"
+# Same host as ../../../hosts/nas-sdg/apps/netbox.nix (nix-personal).
+# Reached BY NAME over TLS since 2026-11-18: nginx terminates TLS for
+# netbox.mgmt.home.geoffdavis.com on VLAN 10 and the container is
+# loopback-only. The old form (http://172.29.10.20:8080 + a Host header,
+# to avoid depending on UDM DNS) cannot pass certificate verification --
+# the cert names the host, not the IP -- so this now does depend on that
+# UDM static record resolving. The Host header just repeats the URL's
+# host; kept as an override point.
+netbox_import_udm_state_netbox_url: "https://netbox.mgmt.home.geoffdavis.com"
 netbox_import_udm_state_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
 
 # 1Password lookup for the WRITE-SCOPED backfill token -- deliberately its
@@ -37,9 +36,13 @@ netbox_import_udm_state_netbox_host_header: "netbox.mgmt.home.geoffdavis.com"
 # commit -- creating it is a manual, one-time step a human has to do
 # before this role can actually run (see README "Before running this
 # role").
-netbox_import_udm_state_netbox_token_op_item: "netbox-udm-import-token"
+# 2026-11-18: was "netbox-udm-import-token", a token of NetBox's local
+# `admin` account, which is deliberately inactive ("User inactive"). Now
+# the `ansible` service account's write-enabled token, the same one
+# netbox_import_udm_dns_records and netbox_import_udm_reservations use.
+netbox_import_udm_state_netbox_token_op_item: "netbox-ansible-service-account"
 netbox_import_udm_state_netbox_token_op_vault: "nas-overlay"
-netbox_import_udm_state_netbox_token_op_field: "token"
+netbox_import_udm_state_netbox_token_op_field: "credential"
 
 # --- UDM connection ------------------------------------------------------
 # Identical to unifi_network_dns_record's defaults -- same controller, same

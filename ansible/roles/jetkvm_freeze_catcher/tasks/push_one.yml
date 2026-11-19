@@ -1,0 +1,60 @@
+---
+# tasks/push_one.yml — jetkvm_freeze_catcher
+#
+# Push ONE rendered file to the console, as chunked base64 over Ansible's own
+# connection, then decode and checksum-verify it on the device.
+#
+# WHY CHUNKED. The first live run sent each file as a single
+# `printf '%s' '<base64>' | base64 -d` raw command. supervise.sh (~2.4 KB of
+# base64) and the init script (~4.5 KB) both went through fine; catcher.sh
+# (~13.4 KB) killed the connection outright — "Shared connection ... closed",
+# reported by Ansible as UNREACHABLE. dropbear caps the length of an exec
+# request, and a raw command carries its whole payload on that command line.
+#
+# So the payload is appended in bounded chunks and only decoded once it is
+# all there. Same philosophy as jetkvm-netbird-update.yml's 4 MiB dd-seek
+# loop: each chunk is small, ordinary, and retryable, and no single request
+# has to be large.
+#
+# Truncate-then-append (`: >` first) rather than appending blind, so a run
+# that died half way through leaves nothing behind to corrupt the next one.
+
+- name: Start a clean base64 staging file for {{ _fc_file.name }}
+  ansible.builtin.raw: ": > {{ _fc_file.dest }}.b64 && echo truncated"
+  register: _fc_trunc
+  changed_when: false
+  failed_when: "'truncated' not in _fc_trunc.stdout"
+
+- name: Append the base64 chunks for {{ _fc_file.name }}
+  ansible.builtin.raw: "printf '%s' '{{ item }}' >> {{ _fc_file.dest }}.b64"
+  loop: >-
+    {{ _fc_file.b64 | list
+       | batch(jetkvm_freeze_catcher_chunk_chars | int)
+       | map('join') | list }}
+  loop_control:
+    label: "{{ _fc_file.name }} chunk {{ ansible_loop.index }}/{{ ansible_loop.length }}"
+    extended: true
+  changed_when: true
+
+# Decode and verify in one step, and only then move it into place. Verifying
+# by checksum rather than by exit code is the point: a transfer that lost a
+# chunk still "succeeds" at every individual step, and a half-written
+# catcher.sh is a watcher that cannot fire.
+- name: Decode, verify and install {{ _fc_file.name }}
+  ansible.builtin.raw: |
+    set -e
+    base64 -d {{ _fc_file.dest }}.b64 > {{ _fc_file.dest }}.ansible-new
+    rm -f {{ _fc_file.dest }}.b64
+    actual=$(sha256sum {{ _fc_file.dest }}.ansible-new | cut -d' ' -f1)
+    if [ "$actual" != "{{ _fc_file.sum }}" ]; then
+      rm -f {{ _fc_file.dest }}.ansible-new
+      echo "CHECKSUM MISMATCH for {{ _fc_file.dest }}: $actual != {{ _fc_file.sum }}" >&2
+      exit 1
+    fi
+    chmod 0755 {{ _fc_file.dest }}.ansible-new
+    mv {{ _fc_file.dest }}.ansible-new {{ _fc_file.dest }}
+    sync
+    echo installed
+  register: _fc_installed_one
+  changed_when: "'installed' in _fc_installed_one.stdout"
+  failed_when: "'installed' not in _fc_installed_one.stdout"

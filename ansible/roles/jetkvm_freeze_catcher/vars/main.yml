@@ -1,0 +1,22 @@
+---
+# vars/main.yml — jetkvm_freeze_catcher
+#
+# Internal, not user-tunable (that is why these are here and not in
+# defaults/): the mapping from template to on-device destination. The paths
+# themselves ARE tunable — they come from defaults/main.yml — but which file
+# goes where is a property of the role, not a knob.
+#
+# Order matters. catcher.sh and supervise.sh are the payload in /userdata
+# (survives firmware updates); the init script goes on / (does NOT survive,
+# which is why this role reinstalls it every run). Installing the init script
+# last means the launcher never points at a payload that is not yet in place.
+_fc_files:
+  - src: catcher.sh.j2
+    name: catcher.sh
+    dest: "{{ jetkvm_freeze_catcher_dir }}/catcher.sh"
+  - src: supervise.sh.j2
+    name: supervise.sh
+    dest: "{{ jetkvm_freeze_catcher_dir }}/supervise.sh"
+  - src: init-script.j2
+    name: init
+    dest: "/etc/init.d/{{ jetkvm_freeze_catcher_init_name }}"

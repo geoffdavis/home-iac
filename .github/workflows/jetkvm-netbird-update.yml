@@ -23,7 +23,7 @@ jobs:
     # to the 1Password Connect server. See AGENTS.md.
     runs-on: [self-hosted, nix, x86_64-linux, nas-sdg]
     env:
-      OP_CONNECT_HOST: http://172.29.10.20:8081
+      OP_CONNECT_HOST: https://op-connect.mgmt.home.geoffdavis.com
       OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN }}
     defaults:
       run:
