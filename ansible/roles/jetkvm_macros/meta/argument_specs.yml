@@ -1,0 +1,96 @@
+---
+# argument_specs locks the role's input schema at role-entry so a malformed
+# override fails with a per-key error before anything on a remote console is
+# touched. Same convention as nixos_freeipa_vm.
+#
+# NOTE: this only validates SHAPE. The semantic checks that actually matter
+# for a macro — unknown key/modifier names, per-macro step/key counts,
+# out-of-range delays, duplicate ids, the 25-macro ceiling — live in
+# tasks/main.yml, because argument_specs cannot express them.
+argument_specs:
+  main:
+    short_description: Manage the keyboard_macros set on a JetKVM OOB console.
+    description:
+      - >-
+        Merges a declared macro set by `id` into the console's
+        /userdata/kvm_config.json, backing the file up first, validating the
+        rendered JSON on the control node, and verifying the transfer by
+        sha256 on the device. Macros not named in the set are left untouched.
+      - >-
+        Macros are not cosmetic on these devices: the JetKVM virtual keyboard
+        taps keys and does not hold modifiers, so a macro is the only way to
+        send a chord at all. See the role README.
+    options:
+      jetkvm_macros_set:
+        type: list
+        elements: dict
+        required: false
+        description: |
+          The macros this role manages, merged into the device's existing
+          set by `id`. Each entry is {id, name, sortOrder, steps[]}, and each
+          step is {keys[], modifiers[], delay}. Defaults to the fleet-standard
+          VT + SysRq set in defaults/main.yml.
+        options:
+          id:
+            type: str
+            required: true
+            description: Stable merge key. Changing it orphans the old macro on the device.
+          name:
+            type: str
+            required: true
+            description: >-
+              Button label in the JetKVM web UI. Name it after the VT NUMBER
+              or SysRq LETTER, never after what currently runs there.
+          sortOrder:
+            type: int
+            required: false
+            description: Display order; the UI sorts on this, not on array position.
+          steps:
+            type: list
+            elements: dict
+            required: true
+            description: >-
+              Macro steps. Every key and modifier in one step is pressed in a
+              SINGLE HID report and fully released before the next step, so a
+              chord that needs one key held while another is pressed must be
+              one step, not several.
+            options:
+              keys:
+                type: list
+                elements: str
+                required: false
+                description: KeyboardEvent.code names, in press order within the report.
+              modifiers:
+                type: list
+                elements: str
+                required: false
+                description: Modifier code names held for the duration of this step.
+              delay:
+                type: int
+                required: false
+                description: Milliseconds to wait after the step's keys are released (50-2000).
+      jetkvm_macros_config_path:
+        type: str
+        required: false
+        description: The device's whole-config JSON path (persists across firmware updates).
+      jetkvm_macros_backup_dir:
+        type: str
+        required: false
+        description: >-
+          On-device directory for pre-write backups. Must not be
+          "<config>.bak" — the firmware's own OTA backup owns that name.
+      jetkvm_macros_backup_keep:
+        type: int
+        required: false
+        description: How many timestamped backups to retain on the device.
+      jetkvm_macros_reboot:
+        type: bool
+        required: false
+        description: >-
+          Reboot the console after a config change. jetkvm_app reads the
+          config once at startup and has no reload path, so `false` leaves
+          the new macros on disk but not in effect.
+      jetkvm_macros_reboot_timeout:
+        type: int
+        required: false
+        description: Seconds to wait for the console's SSH transport after the reboot.

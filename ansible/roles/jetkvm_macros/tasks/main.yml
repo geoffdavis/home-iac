@@ -1,0 +1,444 @@
+---
+# tasks/main.yml — jetkvm_macros
+#
+# Device constraints that shape every task here (see group_vars/oob_kvm.yml
+# and the vault's "Provision a JetKVM OOB Console"):
+#   - no python  → `raw` only on-device, and the play sets gather_facts: false
+#   - no sftp-server → no copy/template/script; transfer is cat-over-ssh
+#   - busybox, not GNU → no `stat`, no `jq`; `sha256sum` and `ls -l` do exist
+#
+# --check: ansible.builtin.raw declares `check_mode: support: none`, and
+# Ansible SKIPS such tasks under --check rather than simulating them. Every
+# read-only raw task below therefore carries `check_mode: false` so it runs
+# for real — that's what makes --check useful here (it reports real drift
+# against the real device) instead of vacuous. The write half is guarded on
+# `not ansible_check_mode` and is genuinely skipped.
+
+# ── control-node validation: nothing reaches a console until this passes ──
+- name: Validate the declared macro set against the firmware's limits
+  delegate_to: localhost
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - jetkvm_macros_set | length <= jetkvm_macros_max_macros
+      - jetkvm_macros_set | map(attribute='id') | list | unique | length
+        == jetkvm_macros_set | length
+      - jetkvm_macros_set | rejectattr('name') | list | length == 0
+      - jetkvm_macros_set | selectattr('steps', 'undefined') | list | length == 0
+      - jetkvm_macros_set | map(attribute='steps') | map('length')
+        | select('<', 1) | list | length == 0
+      - jetkvm_macros_set | map(attribute='steps') | map('length')
+        | select('>', jetkvm_macros_max_steps) | list | length == 0
+    fail_msg: >-
+      jetkvm_macros_set is malformed: needs <= {{ jetkvm_macros_max_macros }}
+      macros, unique non-empty ids, a non-empty name, and 1..{{
+      jetkvm_macros_max_steps }} steps each.
+
+# Split out per-step because the assert above cannot reach into the nested
+# list without an unreadable triple-nested Jinja expression. `subelements`
+# flattens macro→step so each step can be checked on its own terms, and a
+# failure names the macro it came from.
+- name: Validate every macro step (key names, modifier names, counts, delay)
+  delegate_to: localhost
+  loop: "{{ jetkvm_macros_set | subelements('steps') }}"
+  loop_control:
+    label: "{{ item.0.id }}"
+  # item.1['keys'], never item.1.keys: Jinja resolves dotted access with
+  # getattr() first, and `keys` is a dict METHOD — `item.1.keys` yields the
+  # bound method, not the step's key list, and every check below would then
+  # pass vacuously on a macro with a typo in it.
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.1['keys'] | default([]) | length <= jetkvm_macros_max_keys_per_step
+      - item.1['keys'] | default([]) | difference(jetkvm_macros_known_keys)
+        | length == 0
+      - item.1['modifiers'] | default([]) | difference(jetkvm_macros_known_modifiers)
+        | length == 0
+      - (item.1['delay'] | default(jetkvm_macros_min_delay)) >= jetkvm_macros_min_delay
+      - (item.1['delay'] | default(jetkvm_macros_min_delay)) <= jetkvm_macros_max_delay
+    fail_msg: >-
+      macro "{{ item.0.id }}" has a bad step. Unknown keys:
+      {{ item.1['keys'] | default([]) | difference(jetkvm_macros_known_keys) }};
+      unknown modifiers:
+      {{ item.1['modifiers'] | default([]) | difference(jetkvm_macros_known_modifiers) }};
+      delay must be {{ jetkvm_macros_min_delay }}-{{ jetkvm_macros_max_delay }} ms
+      (the firmware CLAMPS an out-of-range delay silently; this role refuses it
+      instead, so what lands on the device is what the repo declares).
+
+# ── read the device's current config ─────────────────────────────────────
+# no_log: kvm_config.json carries `hashed_password` and `local_auth_token`
+# alongside the macros. This is a whole-device config file, not a macro file.
+- name: Read the console's current kvm_config.json
+  check_mode: false
+  no_log: true
+  ansible.builtin.raw: "cat {{ jetkvm_macros_config_path }}"
+  register: _jetkvm_raw_config
+  changed_when: false
+
+- name: Parse the current config
+  no_log: true
+  ansible.builtin.set_fact:
+    _jetkvm_config: "{{ _jetkvm_raw_config.stdout | from_json }}"
+
+- name: Split the console's existing macros into managed and foreign
+  ansible.builtin.set_fact:
+    _jetkvm_existing: "{{ _jetkvm_config.keyboard_macros | default([], true) }}"
+    _jetkvm_managed_ids: "{{ jetkvm_macros_set | map(attribute='id') | list }}"
+
+# A macro without an `id` would make the rejectattr below raise, and there
+# is no safe way to merge it (nothing to match on). Fail loudly rather than
+# silently dropping someone's hand-made macro.
+- name: Require every existing on-device macro to carry an id
+  ansible.builtin.assert:
+    quiet: true
+    that: _jetkvm_existing | selectattr('id', 'undefined') | list | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }} carries a macro with no "id" — this role
+      merges by id and refuses to guess. Fix or remove it in Settings →
+      Macros first.
+
+# The merge: foreign macros (ids this repo doesn't declare) are kept
+# verbatim, then the managed set is appended. Array position is cosmetic —
+# the UI sorts by `sortOrder` before rendering (stores.ts loadMacros) — so
+# appending doesn't reorder anything a user sees, and the result is stable
+# across runs, which is what makes this idempotent.
+- name: Merge the managed set into whatever the console already carries
+  ansible.builtin.set_fact:
+    _jetkvm_foreign: >-
+      {{ _jetkvm_existing | rejectattr('id', 'in', _jetkvm_managed_ids) | list }}
+    _jetkvm_merged: >-
+      {{ (_jetkvm_existing | rejectattr('id', 'in', _jetkvm_managed_ids) | list)
+         + jetkvm_macros_set }}
+
+- name: Check the merged set still fits the firmware's 25-macro ceiling
+  ansible.builtin.assert:
+    quiet: true
+    that: _jetkvm_merged | length <= jetkvm_macros_max_macros
+    fail_msg: >-
+      merging {{ jetkvm_macros_set | length }} managed macros with
+      {{ _jetkvm_foreign | length }} pre-existing ones on {{ inventory_hostname }}
+      exceeds the firmware limit of {{ jetkvm_macros_max_macros }}.
+
+- name: Decide whether anything actually changes
+  ansible.builtin.set_fact:
+    # Structural comparison of PARSED macros, never of file bytes: this role
+    # re-serializes the whole config, and Go's json.Encoder and Ansible's
+    # to_nice_json will never agree byte-for-byte on escaping. Comparing
+    # bytes would report a change on every single run.
+    _jetkvm_macros_drift: "{{ _jetkvm_merged != _jetkvm_existing }}"
+
+- name: Report the macro state
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}:
+      {{ _jetkvm_existing | length }} macro(s) on device
+      ({{ _jetkvm_foreign | map(attribute='id') | list }} not managed here),
+      {{ jetkvm_macros_set | length }} managed
+      → {{ 'CHANGE NEEDED' if _jetkvm_macros_drift | bool else 'already in sync' }}
+
+# ── write half ───────────────────────────────────────────────────────────
+# Guarded on `not ansible_check_mode` explicitly rather than relying on each
+# module's own check-mode behavior: `stat`/`slurp` DO run under --check and
+# would blow up on the tempfile path that `tempfile` skipped creating.
+- name: Apply the merged macro set
+  when:
+    - _jetkvm_macros_drift | bool
+    - not ansible_check_mode
+  block:
+    - name: Create a control-node staging dir
+      delegate_to: localhost
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: jetkvm-macros
+      register: _jetkvm_stage
+
+    # indent=2 + sort_keys=false to match what the firmware's own
+    # json.Encoder.SetIndent("", "  ") writes and to preserve the file's
+    # existing key order, so the only difference from the device's copy is
+    # the macros themselves. Nothing depends on this (LoadConfig is a plain
+    # decode) — it just keeps a hand-diff of the backup readable.
+    - name: Render the merged config on the control node
+      delegate_to: localhost
+      no_log: true
+      ansible.builtin.copy:
+        content: >-
+          {{ (_jetkvm_config | combine({'keyboard_macros': _jetkvm_merged}))
+             | to_nice_json(indent=2, sort_keys=false) }}
+        dest: "{{ _jetkvm_stage.path }}/kvm_config.json"
+        mode: "0600"
+
+    # "Validate JSON on the control node before it ever reaches the device":
+    # read the rendered bytes back off disk and re-parse them, rather than
+    # trusting the in-memory value we just serialized. This is the check that
+    # stops a corrupt whole-device config — which holds the recovery path for
+    # a remote NAS — from being shipped to a console.
+    - name: Read the rendered config back off disk
+      delegate_to: localhost
+      no_log: true
+      ansible.builtin.slurp:
+        src: "{{ _jetkvm_stage.path }}/kvm_config.json"
+      register: _jetkvm_rendered
+
+    # Deliberately no `no_log` here even though the vars below hold the
+    # config: no_log would also suppress the failure message, and neither
+    # `that` (printed as source text, not evaluated) nor `fail_msg` names a
+    # secret. Hiding the reason a config was rejected is worse than not
+    # hiding a message that contains no secret.
+    - name: Validate the rendered config re-parses and lost none of the device's settings
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _jetkvm_parsed.keys() | sort == _jetkvm_config.keys() | sort
+          - _jetkvm_parsed.keyboard_macros == _jetkvm_merged
+        fail_msg: >-
+          the rendered config for {{ inventory_hostname }} does not round-trip
+          cleanly — refusing to write it.
+      vars:
+        _jetkvm_parsed: "{{ _jetkvm_rendered.content | b64decode | from_json }}"
+
+    - name: Compute the rendered config's checksum on the control node
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ _jetkvm_stage.path }}/kvm_config.json"
+        checksum_algorithm: sha256
+      register: _jetkvm_local_stat
+
+    # Back up BEFORE writing. kvm_config.json is the device's whole config —
+    # password hash, network, USB, EDID — not just macros. Corrupting it on a
+    # remote console is how you lose the recovery path you keep the console for.
+    - name: Back up the current config on the device
+      ansible.builtin.raw: |
+        set -e
+        mkdir -p {{ jetkvm_macros_backup_dir }}
+        cp {{ jetkvm_macros_config_path }} \
+          {{ jetkvm_macros_backup_dir }}/kvm_config.json.$(date +%Y%m%dT%H%M%S)
+        # Prune oldest-first. Names sort lexically == chronologically because
+        # the stamp is %Y%m%dT%H%M%S. busybox `ls` has no --sort=time worth
+        # trusting here, and there is no `stat` on this device at all.
+        ls -1 {{ jetkvm_macros_backup_dir }} | sort -r \
+          | tail -n +{{ jetkvm_macros_backup_keep | int + 1 }} \
+          | while read -r f; do rm -f {{ jetkvm_macros_backup_dir }}/"$f"; done
+        ls -l {{ jetkvm_macros_backup_dir }}
+      register: _jetkvm_backup
+      changed_when: true
+
+    # Plain `ssh`, not Ansible's connection plugin, for the same reason the
+    # netbird play does it: there is no sftp-server, so copy/template cannot
+    # work, and a raw stream is the only transfer that does. Because it
+    # bypasses the connection plugin it sees none of
+    # ansible_ssh_common_args/ansible_ssh_private_key_file, so both are
+    # restated here (the CI runner needs the explicit key; the ephemeral
+    # runner has no known_hosts, and a firmware reflash regenerates the
+    # device's host keys anyway — see group_vars/oob_kvm.yml).
+    - name: Push the merged config to the device (cat-over-ssh)
+      delegate_to: localhost
+      vars:
+        _jetkvm_identity_opt: >-
+          {{ ('-i ' + ansible_ssh_private_key_file)
+             if ansible_ssh_private_key_file is defined else '' }}
+      # `cmd:` rather than free-form, for the same splitter reason as the
+      # reconnect wait below.
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          ssh_opts="-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ _jetkvm_identity_opt }}"
+          ssh $ssh_opts {{ ansible_user }}@{{ ansible_host }} \
+            "cat > {{ jetkvm_macros_config_path }}.ansible-new" \
+            < {{ _jetkvm_stage.path | quote }}/kvm_config.json
+          echo staged
+      register: _jetkvm_push
+      changed_when: "'staged' in _jetkvm_push.stdout"
+
+    # Verify by checksum, never by exit code: a stream that died mid-transfer
+    # can still report success (the vault documents this failure mode twice).
+    - name: Verify the staged config's checksum on the device
+      ansible.builtin.raw: "sha256sum {{ jetkvm_macros_config_path }}.ansible-new"
+      register: _jetkvm_staged_sum
+      changed_when: false
+      failed_when: _jetkvm_local_stat.stat.checksum not in _jetkvm_staged_sum.stdout
+
+    - name: Install the merged config
+      ansible.builtin.raw: |
+        set -e
+        mv {{ jetkvm_macros_config_path }}.ansible-new {{ jetkvm_macros_config_path }}
+        sync
+        echo installed
+      register: _jetkvm_install
+      changed_when: "'installed' in _jetkvm_install.stdout"
+
+    # jetkvm_app calls LoadConfig() exactly once and guards it with
+    # `if config != nil { return }`; there is no SIGHUP or reload RPC. The
+    # supervisor in cmd/main.go does not respawn a killed child either, so
+    # "just restart the app" would leave the console dead. A reboot is the
+    # only supported way to make a written config take effect.
+    #
+    # Detached exactly like the netbird play's swap: rebooting drops the
+    # overlay tunnel this session is running over, and `setsid ... &` from a
+    # raw one-liner races the session teardown. Script file + busybox
+    # start-stop-daemon -b is the reliable double-fork.
+    # Read the firmware's config-load timestamp BEFORE the reboot, so the
+    # post-reboot check has something skew-free to compare against. See that
+    # task for why this is not done against the control node's clock.
+    - name: Record the firmware's current config-load timestamp
+      when: jetkvm_macros_reboot | bool
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}/metrics"
+        return_content: true
+      register: _jetkvm_metrics_before
+
+    - name: Park the pre-reboot config-load timestamp
+      when: jetkvm_macros_reboot | bool
+      ansible.builtin.set_fact:
+        _jetkvm_reload_epoch_before: >-
+          {{ _jetkvm_metrics_before.content
+             | regex_search('(?m)^jetkvm_config_last_reload_success_timestamp_seconds (\S+)$', '\1')
+             | first | default(0) }}
+
+    - name: Reboot the console so jetkvm_app reloads the config
+      when: jetkvm_macros_reboot | bool
+      ansible.builtin.raw: |
+        printf '%s\n' \
+          '#!/bin/sh' \
+          'sleep 3' \
+          '/sbin/reboot' \
+          > /tmp/jetkvm-macros-reboot.sh
+        chmod +x /tmp/jetkvm-macros-reboot.sh
+        start-stop-daemon -S -b -x /tmp/jetkvm-macros-reboot.sh && echo "reboot dispatched"
+      register: _jetkvm_reboot
+      changed_when: "'reboot dispatched' in _jetkvm_reboot.stdout"
+      failed_when: "'reboot dispatched' not in _jetkvm_reboot.stdout"
+
+    # Polled from the CONTROL NODE with plain ssh, for two reasons that each
+    # rule out the obvious alternative:
+    #
+    #   - NOT wait_for_connection. It proves the connection by running the
+    #     `ping` MODULE, which needs python on the target. These devices have
+    #     none (confirmed live 2026-09-10: `ansible -m ping` against
+    #     jetkvm-sdg-02 returns "The module interpreter '/usr/bin/python3'
+    #     was not found", rc 127). It therefore cannot ever succeed here — it
+    #     burns the full timeout and fails on a healthy device.
+    #   - NOT `until`/`retries` on a raw task. Those only re-evaluate
+    #     COMPLETED task results; an AnsibleConnectionFailure returns
+    #     immediately as unreachable without consuming a retry, which is
+    #     exactly what a rebooting host produces.
+    - name: Wait for the console's SSH transport to come back
+      when: jetkvm_macros_reboot | bool
+      delegate_to: localhost
+      vars:
+        _jetkvm_identity_opt: >-
+          {{ ('-i ' + ansible_ssh_private_key_file)
+             if ansible_ssh_private_key_file is defined else '' }}
+      # `cmd:` rather than the free-form shorthand: free-form runs the whole
+      # block through ansible's argument splitter, which tracks quotes across
+      # the entire string and dies with "unbalanced jinja2 block or quotes" on
+      # something as innocent as an apostrophe in a comment. `cmd:` is a plain
+      # scalar and skips the splitter entirely.
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          ssh_opts="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ _jetkvm_identity_opt }}"
+          started=$(date +%s)
+          deadline=$(( started + {{ jetkvm_macros_reboot_timeout | int }} ))
+          # Do not probe straight away: the console is still up for the few
+          # seconds the detached reboot script waits out, and a success there
+          # would mean "not rebooted yet", not "back".
+          sleep 20
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if ssh $ssh_opts {{ ansible_user }}@{{ ansible_host }} true 2>/dev/null; then
+              echo "back after $(( $(date +%s) - started ))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "console did not answer ssh within {{ jetkvm_macros_reboot_timeout | int }}s" >&2
+          exit 1
+      register: _jetkvm_back
+      changed_when: false
+
+    - name: Re-read the config after the reboot
+      check_mode: false
+      no_log: true
+      ansible.builtin.raw: "cat {{ jetkvm_macros_config_path }}"
+      register: _jetkvm_verify_raw
+      changed_when: false
+      retries: 5
+      delay: 10
+      until: _jetkvm_verify_raw.stdout is search('keyboard_macros')
+
+    - name: Verify the macro set survived the write (and the reboot)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _jetkvm_verify_macros | map(attribute='id') | sort
+            == _jetkvm_merged | map(attribute='id') | sort
+          - _jetkvm_verify_macros == _jetkvm_merged
+        fail_msg: >-
+          {{ inventory_hostname }}'s config does not carry the expected macro
+          set after the write. A backup is in {{ jetkvm_macros_backup_dir }}.
+        success_msg: >-
+          {{ inventory_hostname }}: {{ _jetkvm_merged | length }} macro(s) live
+          ({{ _jetkvm_merged | map(attribute='id') | list | join(', ') }})
+      vars:
+        _jetkvm_verify_macros: >-
+          {{ (_jetkvm_verify_raw.stdout | from_json).keyboard_macros
+             | default([], true) }}
+
+    # The strongest available proof, and the only one that asks the FIRMWARE
+    # rather than the filesystem. LoadConfig() bails out early and keeps the
+    # built-in DEFAULTS if json.Unmarshal fails, so a config this role
+    # corrupted would leave a console that boots, answers SSH, and has our
+    # file sitting on disk — while running none of it, password included.
+    # jetkvm_config_* is served outside the web auth, so no cookie is needed.
+    #
+    # Comparing the reload timestamp against its own pre-reboot value, rather
+    # than against the control node's clock, keeps this free of clock-skew
+    # assumptions between a macOS laptop, a CI runner and an armv7l SoC — and
+    # it is what distinguishes "rebooted and re-read the new config" from
+    # "never actually rebooted, still reporting last boot's successful load".
+    - name: Ask the firmware whether it actually loaded the config it just booted
+      when: jetkvm_macros_reboot | bool
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}/metrics"
+        return_content: true
+      register: _jetkvm_metrics_after
+      retries: 10
+      delay: 10
+      # Deliberately no capture-group extraction inside `until`: a
+      # regex_search group reference ('\1') loses its backslash by the time an
+      # `until` expression is evaluated and the filter rejects it with
+      # "Unknown argument" (live 2026-09-10, ansible-core 2.21.1). The same
+      # expression is fine in a task `vars:` — hence the split with the assert
+      # below, which does the timestamp comparison there.
+      until:
+        - _jetkvm_metrics_after.content | default('')
+          is search('(?m)^jetkvm_config_last_reload_successful 1$')
+
+    - name: Confirm the config load happened on THIS boot, not a previous one
+      when: jetkvm_macros_reboot | bool
+      ansible.builtin.assert:
+        quiet: true
+        that: _jetkvm_reload_epoch_after | float > _jetkvm_reload_epoch_before | float
+        fail_msg: >-
+          {{ inventory_hostname }} reports its last successful config load at
+          {{ _jetkvm_reload_epoch_after }}, no later than the {{
+          _jetkvm_reload_epoch_before }} seen before the reboot — the console
+          did not actually restart, so it is still running the old macro set.
+        success_msg: >-
+          {{ inventory_hostname }}: firmware re-read the config successfully
+          after the reboot.
+      vars:
+        _jetkvm_reload_epoch_after: >-
+          {{ _jetkvm_metrics_after.content
+             | regex_search('(?m)^jetkvm_config_last_reload_success_timestamp_seconds (\S+)$', '\1')
+             | first | default(0) }}
+
+  always:
+    - name: Remove the control-node staging dir
+      when: _jetkvm_stage.path is defined
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ _jetkvm_stage.path }}"
+        state: absent

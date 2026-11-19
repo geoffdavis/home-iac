@@ -1,0 +1,102 @@
+---
+# defaults/main.yml — jetkvm_macros
+#
+# The fleet-standard `keyboard_macros` set for the JetKVM OOB consoles,
+# plus the knobs for how it gets written. See README.md for why macros are
+# the ONLY way to send a chord to these devices, and for the empirical
+# result behind the single-step SysRq shape below.
+
+# Whole-device config file on the persistent filesystem. `/` is reflashed
+# by every firmware update; `/userdata` is not, which is why the macros
+# survive an update but the netbird init script does not.
+jetkvm_macros_config_path: /userdata/kvm_config.json
+
+# Where the pre-write backups go. Deliberately NOT `<config>.bak`: the
+# firmware's own SaveBackupConfig() writes exactly that path during an OTA
+# (config.go), so using it would mean our backup and the firmware's
+# recovery copy fight over one filename.
+jetkvm_macros_backup_dir: /userdata/kvm-config-backups
+jetkvm_macros_backup_keep: 10
+
+# jetkvm_app loads the config exactly once, at startup: LoadConfig() is
+# guarded by `if config != nil { return }` and there is no SIGHUP/reload
+# path (config.go). A file write therefore does nothing until the app
+# restarts, and the supervisor in cmd/main.go does NOT respawn a killed
+# child — so a reboot is the only supported way to apply this.
+jetkvm_macros_reboot: true
+# The netbird play learned the hard way that this device class can take a
+# long time to come back on the overlay; 600s there, same here.
+jetkvm_macros_reboot_timeout: 600
+
+# ── The managed set ──────────────────────────────────────────────────
+#
+# NAMING RULE (learned the hard way, see README): name a macro after the
+# VT NUMBER or the SysRq LETTER, never after whatever happens to run
+# there. "Console" once pointed at btop because the login had moved to
+# tty3. VT numbers are stable; what runs on them is not.
+#
+# Any macro id NOT listed here is left alone on the device — this set is
+# merged by `id`, not blindly overwritten.
+jetkvm_macros_set:
+  # Ctrl+Alt+Fn — VT switching. The operator's own compositor grabs this
+  # chord before it ever reaches the KVM when typed into the browser
+  # (jetkvm/kvm#211, #401), and the virtual keyboard only *taps* keys, so
+  # a macro is the only thing that genuinely holds the modifiers.
+  - id: vt1
+    name: F1 - VT1 (health dash)
+    sortOrder: 1
+    steps:
+      - keys: [F1]
+        modifiers: [ControlLeft, AltLeft]
+        delay: 50
+  - id: vt2
+    name: F2 - VT2 (btop)
+    sortOrder: 2
+    steps:
+      - keys: [F2]
+        modifiers: [ControlLeft, AltLeft]
+        delay: 50
+  - id: vt3
+    name: F3 - VT3 (LOGIN)
+    sortOrder: 3
+    steps:
+      - keys: [F3]
+        modifiers: [ControlLeft, AltLeft]
+        delay: 50
+  # VT12 is where kernel output goes fleet-wide as of nix-personal's
+  # modules/nas/crash-console.nix (console=tty12, kernel.sysrq=1).
+  - id: vt12
+    name: F12 - VT12 (KERNEL LOG)
+    sortOrder: 4
+    steps:
+      - keys: [F12]
+        modifiers: [ControlLeft, AltLeft]
+        delay: 50
+  # ── SysRq ──
+  # ONE step, both keys in one `keys` array, PrintScreen FIRST. This shape
+  # is load-bearing and was verified live against nas-sdg — see README
+  # ("Why SysRq is one step, not two"). The two-step shape does NOT work:
+  # the firmware fully releases the keyboard between steps, so Alt is gone
+  # by the time the command key arrives and the kernel never sees a SysRq
+  # sequence at all.
+  - id: sysrq-w
+    name: SysRq W - blocked tasks
+    sortOrder: 5
+    steps:
+      - keys: [PrintScreen, KeyW]
+        modifiers: [AltLeft]
+        delay: 50
+  - id: sysrq-t
+    name: SysRq T - all tasks
+    sortOrder: 6
+    steps:
+      - keys: [PrintScreen, KeyT]
+        modifiers: [AltLeft]
+        delay: 50
+  - id: sysrq-l
+    name: SysRq L - all-CPU backtrace
+    sortOrder: 7
+    steps:
+      - keys: [PrintScreen, KeyL]
+        modifiers: [AltLeft]
+        delay: 50

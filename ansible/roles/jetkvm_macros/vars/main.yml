@@ -1,0 +1,84 @@
+---
+# vars/main.yml — jetkvm_macros
+#
+# Firmware-derived constants. In vars/ rather than defaults/ because these
+# describe what the DEVICE accepts, not what the operator wants: they only
+# change when JetKVM firmware changes. Overriding them is possible (vars/
+# still loses to -e) but should mean "the firmware moved", not "I want a
+# different macro".
+#
+# Validated against firmware 0.5.8 (rev df5dbea, the fleet version as of
+# 2026-09-10, read from /metrics jetkvm_build_info).
+
+# Hard limits from config.go's `Constants for keyboard macro limits`.
+# Delay is CLAMPED, not rejected, by KeyboardMacroStep.Validate() — this
+# role fails on an out-of-range delay instead, so what lands on the device
+# is what the repo says, not a silently corrected version of it.
+jetkvm_macros_max_macros: 25
+jetkvm_macros_max_steps: 10
+jetkvm_macros_max_keys_per_step: 10
+jetkvm_macros_min_delay: 50
+jetkvm_macros_max_delay: 2000
+
+# Modifier names accepted by the web UI's `modifiers` map
+# (ui/src/keyboardMappings.ts). Anything else is silently reduced to a
+# 0 mask by `.reduce((acc, val) => acc + val, 0)` over `undefined` — i.e.
+# the chord quietly loses its modifier and the macro looks installed but
+# does the wrong thing.
+jetkvm_macros_known_modifiers:
+  [
+    AltGr,
+    AltLeft,
+    AltRight,
+    ControlLeft,
+    ControlRight,
+    MetaLeft,
+    MetaRight,
+    ShiftLeft,
+    ShiftRight,
+  ]
+
+# Key names accepted by the same file's `keys` map (browser
+# KeyboardEvent.code convention). An unknown name is dropped by
+# `.map(key => keys[key]).filter(Boolean)` in useKeyboard.ts — the macro
+# still appears in the UI and still "runs", it just sends nothing. That
+# silent no-op is the whole reason this allowlist exists: a typo'd key
+# name must fail on the control node, not at 3am during an incident.
+jetkvm_macros_known_keys:
+  [
+    Again, AltGr, AltLeft, AltRight, AlternateErase, Application, ArrowDown,
+    ArrowLeft, ArrowRight, ArrowUp, Attention, Backquote, Backslash,
+    Backspace, BracketLeft, BracketRight, Cancel, CapsLock, Clear,
+    ClearAgain, Comma, Compose, ContextMenu, ControlLeft, ControlRight,
+    Copy, CrSel, CurrencySubunit, CurrencyUnit, Cut, DecimalSeparator,
+    Delete, Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7,
+    Digit8, Digit9, End, Enter, Equal, Escape, ExSel, Execute, F1, F10, F11,
+    F12, F13, F14, F15, F16, F17, F18, F19, F2, F20, F21, F22, F23, F24, F3,
+    F4, F5, F6, F7, F8, F9, Find, Grave, Hangeul, Hanja, HashTilde, Help,
+    Henkan, Hiragana, Home, Insert, International7, International8,
+    International9, IntlBackslash, KPJPComma, Katakana, KatakanaHiragana,
+    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL,
+    KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyRO, KeyS, KeyT, KeyU, KeyV, KeyW,
+    KeyX, KeyY, KeyZ, Lang6, Lang7, Lang8, Lang9, LockingCapsLock,
+    LockingNumLock, LockingScrollLock, Menu, MetaLeft, MetaRight, Minus,
+    Muhenkan, Mute, NumLock, Numpad0, Numpad00, Numpad000, Numpad1, Numpad2,
+    Numpad3, Numpad4, Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
+    NumpadAdd, NumpadAnd, NumpadAt, NumpadBackspace, NumpadBinary,
+    NumpadCircumflex, NumpadClear, NumpadClearEntry, NumpadColon,
+    NumpadComma, NumpadDecimal, NumpadDecimalBase, NumpadDelete,
+    NumpadDivide, NumpadDownArrow, NumpadEnd, NumpadEnter, NumpadEqual,
+    NumpadExclamation, NumpadGreaterThan, NumpadHexadecimal, NumpadHome,
+    NumpadKeyA, NumpadKeyB, NumpadKeyC, NumpadKeyD, NumpadKeyE, NumpadKeyF,
+    NumpadLeftArrow, NumpadLeftBrace, NumpadLeftParen, NumpadLessThan,
+    NumpadLogicalAnd, NumpadLogicalOr, NumpadMemoryAdd, NumpadMemoryClear,
+    NumpadMemoryDivide, NumpadMemoryMultiply, NumpadMemoryRecall,
+    NumpadMemoryStore, NumpadMemorySubtract, NumpadMultiply, NumpadOctal,
+    NumpadOctathorpe, NumpadOr, NumpadPageDown, NumpadPageUp, NumpadPercent,
+    NumpadPlusMinus, NumpadRightArrow, NumpadRightBrace, NumpadRightParen,
+    NumpadSpace, NumpadSubtract, NumpadTab, NumpadUpArrow, NumpadXOR,
+    Octothorpe, Operation, Out, PageDown, PageUp, Paste, Pause, Period,
+    Power, PrintScreen, Prior, Quote, Return, ScrollLock, Select, Semicolon,
+    Separator, ShiftLeft, ShiftRight, Slash, Space, Stop, SystemRequest,
+    Tab, ThousandsSeparator, Tilde, Undo, VolumeDown, VolumeUp, Yen,
+    ZenkakuHankaku,
+  ]
